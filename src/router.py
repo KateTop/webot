@@ -482,6 +482,20 @@ class MessageRouter:
         context = self._store.get_messages_since(
             msg["chat_id"], since, limit=20,
         )
+        # Explicit history lookup is strictly scoped to the triggering group.
+        query = clean_content.strip()
+        for prefix in ("搜索群聊 ", "查询群聊 ", "查找群聊 "):
+            if query.startswith(prefix):
+                keyword = query[len(prefix):].strip()[:80]
+                if keyword:
+                    context = self._store.search_group_messages(
+                        msg["chat_id"], keyword, int(time.time()) - 30 * 86400,
+                    )
+                    context = [m for m in context
+                               if m["message_id"] != msg.get("message_id")]
+                    if not context:
+                        return f"@{display_name} 最近30天本群没有找到“{keyword}”相关记录。"
+                break
         if context:
             for m in context:
                 custom = self._nicks.resolve_name(m["sender_id"])
@@ -512,6 +526,9 @@ class MessageRouter:
             return f"@{display_name} {ai_reply}"
         except Exception as e:
             logger.error("AI chat failed: %s", e)
+            if (self._config.ai_backend == "openai"
+                    and self._config.openai_web_search):
+                return f"@{display_name} 联网搜索失败，请检查 Sub2API 渠道和模型是否支持 web_search。"
             return f"@{display_name} 大脑短路了，稍等再试～"
 
     # ── Welcome handler ─────────────────────────────────────────

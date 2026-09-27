@@ -4,6 +4,8 @@
 > 生成日期: 2026-06-11
 > 最后更新: 2026-06-11
 
+> 第一轮维护更新: 2026-09-27（配置持久化、Prompt、联网搜索、当前群检索）
+
 ---
 
 ## 📝 维护指南（修改代码前必读）
@@ -95,6 +97,7 @@ grep "文件名" CODEBASE_REFERENCE.md
 | `OPENAI_API_KEY` | `str` | `""` | `src/config.py` | `src/summarize/openai_backend.py:OpenAISummarizer.__init__()` |
 | `OPENAI_BASE_URL` | `str` | `"https://api.openai.com/v1"` | `src/config.py` | `src/summarize/openai_backend.py` |
 | `OPENAI_MODEL` | `str` | `"gpt-4o-mini"` | `src/config.py` | `src/summarize/openai_backend.py`, `src/bot.py:_log_banner()` |
+| `OPENAI_WEB_SEARCH` | `bool` | `False` | `src/config.py:load_config()` | `src/summarize/openai_backend.py:OpenAISummarizer._call_chat_api()` |
 | `WECHAT_BACKEND` | `str` | `"wcdb"` | `src/config.py` | `src/bot.py:_create_wechat_backend()` |
 | `WECHAT_GROUPS` | `str` | `"*"` | `src/config.py` (经 `_decode_wechat_groups` URL解码) | `src/bot.py:_create_wechat_backend()`, `src/wechat/wcdb_backend.py:_resolve_groups()` |
 | `WECHAT_DATA_DIR` | `str` | `""` | `src/config.py` | `src/wechat/wcdb_client.py`, `src/voice/file_locator.py`, `src/web/server.py` |
@@ -159,6 +162,8 @@ grep "文件名" CODEBASE_REFERENCE.md
 | 常量名 | 类型 | 值 | 所在文件 | 用途 |
 |---|---|---|---|---|
 | `PROJECT_ROOT` | `Path` | 自动解析 | `src/config.py` | 项目根目录（支持 frozen EXE 模式） |
+| `PROMPT_FILE` | `Path` | `PROJECT_ROOT/data/prompts.json` | `src/summarize/prompt_settings.py` | 可视化 Prompt 的持久化文件 |
+| `PROMPT_FIELDS` | `tuple[str, str]` | `("chat", "summary")` | `src/summarize/prompt_settings.py` | 可编辑指令类别 |
 | `UI_DIR` | `Path` | `ui/dist/` | `src/web/server.py` | 前端静态文件目录 |
 | `WEBSOCKET_GUID` | `bytes` | `b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"` | `src/web/server.py` | WebSocket 协议 GUID |
 | `CONSOLIDATE_MSG_THRESHOLD` | `int` | `50` | `src/memory/consolidator.py` | 触发记忆合并的消息数阈值 |
@@ -308,7 +313,7 @@ todo_delete_keywords: list[str] = [
 
 | 函数 | 描述 | 参数 | 返回值 |
 |---|---|---|---|
-| `__init__(api_key, model, base_url, chunk_size, max_retries)` | 初始化 OpenAI 客户端 (默认 `gpt-4o-mini` / `https://api.openai.com/v1`) | API配置 | `None` |
+| `__init__(api_key, model, base_url, chunk_size, max_retries, web_search=False)` | 初始化 OpenAI 客户端及可选搜索 | API配置 | `None` |
 | `_extra_body()` | 返回 provider 专属 extra_body；`disable_thinking` 时返回 `{"thinking":{"type":"disabled"}}` 否则 `None` | — | `dict \| None` |
 | `_call_chat_api(system_prompt, messages)` | OpenAI 兼容对话 API | prompt + messages | `str` |
 | `_summarize_direct(messages, requester_name)` | 直接总结(tool calling) | 消息列表 | `SummaryResult` |
@@ -317,6 +322,14 @@ todo_delete_keywords: list[str] = [
 | `consolidate_memory(existing_memory, new_messages)` | 记忆合并 | 现有记忆 + 新消息 | `str` |
 | `_parse_summary_from_tool_call(response)` | 解析 tool call 响应(模块级) | `response` | `SummaryResult` |
 | `STORE_SUMMARY_TOOL` | 结构化输出 tool schema(模块级) | — | `dict` |
+
+### 2.6c `src/summarize/prompt_settings.py`
+
+| 函数 | 描述 | 参数 | 返回值 |
+|---|---|---|---|
+| `load_prompt_settings()` | 从 `data/prompts.json` 读取附加指令 | 无 | `dict[str, str]` |
+| `save_prompt_settings(data)` | 校验并原子保存附加指令 | `data: dict` | `dict[str, str]` |
+| `with_user_instructions(default_prompt, field)` | 将用户指令附加到内置系统 Prompt | `default_prompt: str, field: str` | `str` |
 
 ### 2.7 `src/summarize/prompts.py`
 
@@ -466,6 +479,7 @@ todo_delete_keywords: list[str] = [
 | `get_user_last_timestamp(chat_id, sender_id)` | 获取用户最后发言时间 | `chat_id, sender_id: str` | `int \| None` |
 | `get_user_previous_timestamp(chat_id, sender_id, before_ts)` | 获取用户在某时间前的最后发言 | `chat_id, sender_id: str, before_ts: int` | `int \| None` |
 | `get_messages_since(chat_id, since_ts, until_ts, limit)` | 获取时间窗口内消息 | `chat_id, since_ts, until_ts, limit` | `list[dict]` |
+| `search_group_messages(chat_id, keyword, since_ts, limit=20)` | 当前群关键词检索，按时间返回证据 | `chat_id: str, keyword: str, since_ts: int, limit: int` | `list[dict]` |
 | `was_recently_triggered(chat_id, window_sec)` | 检查最近是否触发过 | `chat_id: str, window_sec: int` | `bool` |
 | `get_group_memory(chat_id)` | 获取群聊记忆 | `chat_id: str` | `dict \| None` |
 | `upsert_group_memory(chat_id, memory_text, message_count, last_message_id)` | 更新/插入群聊记忆 | `chat_id, memory_text, message_count, last_message_id` | `None` |
@@ -1553,6 +1567,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com     # API 地址
 OPENAI_API_KEY=sk-xxx                          # OpenAI 兼容 API 密钥
 OPENAI_BASE_URL=https://api.openai.com/v1      # GLM: https://open.bigmodel.cn/api/paas/v4/
 OPENAI_MODEL=gpt-4o-mini                       # 模型 ID (如 glm-4-flash)
+OPENAI_WEB_SEARCH=false                       # Sub2API 支持 web_search 的渠道才开启
 
 # === Claude (Anthropic) ===
 ANTHROPIC_API_KEY=sk-ant-xxx                   # Anthropic API 密钥
@@ -1705,3 +1720,36 @@ WCDB_KEY=
 | `data/voice_cache.json` | `src/voice/pipeline.py` | 语音识别缓存 |
 | `data/send_failures.log` | `src/wechat/window_controller.py` | 发送失败记录 |
 | `data/crash.log` | `desktop.py` / `desktop_mac.py` | 崩溃日志 |
+| `data/prompts.json` | `src/summarize/prompt_settings.py` | 用户附加的问答和直接总结指令，UTF-8 JSON；不保存 API Key |
+
+### 5.6 第一轮修改的调用链与接口（2026-09-27）
+
+配置持久化：
+
+```text
+src/config.py:resolve_env_file() → EXE 所在目录/.env（或 WEBOT_ENV_FILE）
+  └─ find_env_file() → 冻结版首次启动可从旧 CWD/.env 复制到规范位置
+src/web/server.py:_UIHandler._handle_request()
+  ├─ POST /api/config → _update_env()
+  ├─ POST /api/config/import → _update_env()
+  └─ 引导、密钥提取 → _set_env_key() / _write_onboarding_to_env() → _update_env()
+```
+
+`_update_env(env_path: Path, updates: dict) -> list[str]` 在同一把锁内读取、合并、原子替换 `.env`，保留未知键并跳过已遮盖的密钥。导入旧备份只写备份中存在的字段。`_set_env_key(env_path: Path, key: str, value: str) -> None` 调用它更新单项。`_write_onboarding_to_env(env_path)` 仅写引导页实际提供的字段及 `ONBOARDING_DONE`。
+
+Prompt：
+
+```text
+ui/src/components/ConfigPanel.jsx:AiSection()
+  ├─ GET /api/prompts → load_prompt_settings()
+  └─ POST /api/prompts → save_prompt_settings()
+AbstractSummarizer.chat() → with_user_instructions(default_prompt, "chat")
+OpenAISummarizer._summarize_direct() / ClaudeSummarizer._summarize_direct()
+  └─ with_user_instructions(SYSTEM_PROMPT, "summary")
+```
+
+`src/summarize/prompt_settings.py` 新增 `PROMPT_FILE: Path`（`PROJECT_ROOT/data/prompts.json`）、`PROMPT_FIELDS`（`chat`、`summary`）、`load_prompt_settings() -> dict[str, str]`、`save_prompt_settings(data: dict) -> dict[str, str]`、`with_user_instructions(default_prompt: str, field: str) -> str`。每个字段最多 12000 字，保存使用原子替换；下次 AI 调用读取。当前仅附加到群聊问答与直接总结的 system prompt，分块总结和主动发言继续使用内置指令。前端入口位于系统配置的 AI 页面，独立“保存 Prompt”按钮。打包 `build.spec` 的 hiddenimports 含 `src.summarize.prompt_settings`。
+
+联网搜索：`OPENAI_WEB_SEARCH` 默认 `false`；`BotConfig.openai_web_search` → `create_summarizer()` → `OpenAISummarizer.__init__(..., web_search: bool = False)` → `_call_chat_api()`。开启时在 Chat Completions 请求中发送 `tools: [{"type": "web_search"}]`。Sub2API 0.2.8 的兼容转换路径可将此工具映射到 Responses 搜索；渠道和模型仍须支持，且 Chat Completions 响应不会保留完整的 `web_search_call` 来源结构。只影响 OpenAI 兼容后端的群聊问答；总结请求不附加搜索工具。系统配置 AI 页面可切换此项，配置保存/导入/导出接口读写 `OPENAI_WEB_SEARCH`。
+
+当前群检索：`MessageRouter._handle_chat()` 识别 `搜索群聊 关键词`、`查询群聊 关键词`、`查找群聊 关键词`，调用 `MessageStore.search_group_messages(chat_id: str, keyword: str, since_ts: int, limit: int = 20) -> list[dict]`。查询限定触发消息的 `chat_id`、最近 30 天、最多 20 条，并转义 SQL LIKE 通配符。结果带时间和昵称交给问答模型；无结果则直接回复。其它普通问答仍用当前群最近 10 分钟上下文。

@@ -67,6 +67,7 @@ def create_summarizer(config) -> AbstractSummarizer:
             model=config.openai_model,
             base_url=config.openai_base_url,
             chunk_size=config.chunk_size,
+            web_search=config.openai_web_search,
         )
 
     else:

@@ -21,6 +21,7 @@ from openai import (
 )
 
 from .base import AbstractSummarizer
+from .prompt_settings import with_user_instructions
 from .models import SummaryResult
 from .prompts import (
     SYSTEM_PROMPT,
@@ -174,11 +175,13 @@ class OpenAISummarizer(AbstractSummarizer):
                  model: str = MODEL_DEFAULT,
                  base_url: str = "https://api.openai.com/v1",
                  chunk_size: int = 400,
-                 max_retries: int = 3):
+                 max_retries: int = 3,
+                 web_search: bool = False):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.chunk_size = chunk_size
         self.max_retries = max_retries
+        self.web_search = web_search
 
     def _extra_body(self) -> dict | None:
         """Provider-specific extra request body.
@@ -196,12 +199,16 @@ class OpenAISummarizer(AbstractSummarizer):
                         messages: list[dict]) -> str:
         """OpenAI-compatible: uses chat.completions.create() with system role."""
         api_messages = [{"role": "system", "content": system_prompt}] + messages
+        search_tools = [{"type": "web_search"}] if self.web_search else None
         response = self.client.chat.completions.create(
             model=self.model,
             max_tokens=400,
             messages=api_messages,
             extra_body=self._extra_body(),
+            **({"tools": search_tools} if search_tools else {}),
         )
+        if not response.choices:
+            raise RuntimeError("搜索请求没有返回聊天结果；请检查 Sub2API 模型与渠道是否支持 web_search")
         return response.choices[0].message.content or "..."
 
     # ── Direct summarization ──────────────────────────────────────
@@ -216,7 +223,7 @@ class OpenAISummarizer(AbstractSummarizer):
                 model=self.model,
                 max_tokens=8192,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": with_user_instructions(SYSTEM_PROMPT, "summary")},
                     {"role": "user", "content": user_prompt},
                 ],
                 tools=[STORE_SUMMARY_TOOL],

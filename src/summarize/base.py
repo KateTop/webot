@@ -152,10 +152,12 @@ class AbstractSummarizer(ABC):
                 sender = m.get("sender_name", "?")
                 content = m.get("content", "")
                 if content:
-                    context_lines.append(f"{sender}: {content}")
+                    timestamp = m.get("timestamp")
+                    when = datetime.datetime.fromtimestamp(timestamp).strftime("%m-%d %H:%M") if timestamp else ""
+                    context_lines.append(f"{when} {sender}: {content[:500]}")
             if context_lines:
                 context_section = (
-                    "最近群聊记录（网友提到了之前的内容，请参考）：\n"
+                    "当前群聊记录（引用时标明日期；没有证据就说明未找到）：\n"
                     + "\n".join(context_lines)
                     + "\n\n"
                 )
@@ -165,6 +167,7 @@ class AbstractSummarizer(ABC):
         context_section = _esc(context_section)
         memory_display = _esc(memory_display)
 
+        from .prompt_settings import with_user_instructions
         system_prompt = self.CHAT_SYSTEM_PROMPT.format(
             bot_name=bot_name,
             group_name=group_name,
@@ -174,6 +177,7 @@ class AbstractSummarizer(ABC):
             current_message=message,
             group_memory=memory_display,
         )
+        system_prompt = with_user_instructions(system_prompt, "chat")
 
         # ── 3. Build user message (just the trigger) ──────────────
         user_prompt = (

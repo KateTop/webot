@@ -224,12 +224,13 @@ class TestSummarizerBaseUrl:
         captured = {}
 
         class FakeOpenAISummarizer:
-            def __init__(self, api_key, model, base_url, chunk_size):
+            def __init__(self, api_key, model, base_url, chunk_size, web_search=False):
                 captured.update({
                     "api_key": api_key,
                     "model": model,
                     "base_url": base_url,
                     "chunk_size": chunk_size,
+                    "web_search": web_search,
                 })
 
         monkeypatch.setattr(summarize, "OpenAISummarizer", FakeOpenAISummarizer)
@@ -348,3 +349,17 @@ class TestConfigExportImport:
             page.wait_for_timeout(500)
             page_text = page.inner_text("body")
             assert "导出备份" in page_text or "配置备份" in page_text
+
+
+class TestFirstRoundControls:
+    def test_prompt_editor_and_search_switch_are_visible(self, page):
+        page.route("http://127.0.0.1:7327/**", lambda route: route.continue_(
+            url=route.request.url.replace(":7327", f":{SERVER_PORT}")))
+        page.goto(BASE_URL, timeout=10000)
+        page.locator("button:has-text('\u7cfb\u7edf\u914d\u7f6e')").first.click()
+        page.get_by_text("\u81ea\u5b9a\u4e49 Prompt").wait_for(timeout=5000)
+        assert page.locator("textarea").count() >= 2
+        # The compatible API option already exists in source; select it.
+        page.locator("button:has-text('DeepSeek')").first.click()
+        page.locator("button:has-text('openai')").last.click()
+        page.get_by_text("\u8054\u7f51\u641c\u7d22").wait_for(timeout=5000)

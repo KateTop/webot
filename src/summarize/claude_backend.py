@@ -8,6 +8,7 @@ import logging
 import anthropic
 
 from .base import AbstractSummarizer
+from .prompt_settings import with_user_instructions
 from .models import SummaryResult
 from .prompts import (
     SYSTEM_PROMPT,
@@ -81,7 +82,7 @@ class ClaudeSummarizer(AbstractSummarizer):
             response = self.client.messages.parse(
                 model=self.model,
                 max_tokens=8192,
-                system=SYSTEM_PROMPT,
+                system=with_user_instructions(SYSTEM_PROMPT, "summary"),
                 messages=[{"role": "user", "content": user_prompt}],
                 output_format=SummaryResult,
             )

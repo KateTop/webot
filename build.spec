@@ -61,6 +61,7 @@ a = Analysis(
         'src.trigger', 'src.trigger.detector',
         'src.summarize', 'src.summarize.base', 'src.summarize.claude_backend',
         'src.summarize.deepseek_backend', 'src.summarize.models', 'src.summarize.prompts',
+        'src.summarize.prompt_settings',
         'src.proactive', 'src.proactive.gate', 'src.proactive.modes',
         'src.proactive.rate_tracker', 'src.proactive.sticky',
         'src.memory', 'src.memory.consolidator',

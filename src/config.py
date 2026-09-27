@@ -101,18 +101,20 @@ def resolve_env_file() -> Path:
 def find_env_file() -> Path | None:
     """Return the .env path that actually exists, or None.
 
-    The canonical location is resolve_env_file().  For backward
-    compatibility with older installs whose .env landed in the working
-    directory, a read-only fallback to CWD/.env is kept — but writes always
-    go to resolve_env_file().
+    A legacy CWD file is copied once into the canonical EXE directory for
+    frozen installs; subsequent reads and writes use only that location.
     """
     canonical = resolve_env_file()
     if canonical.exists():
         return canonical
 
-    legacy = Path.cwd() / ".env"
-    if legacy != canonical and legacy.exists():
-        return legacy
+    if getattr(sys, "frozen", False) and not os.getenv("WEBOT_ENV_FILE"):
+        legacy = Path.cwd() / ".env"
+        if legacy != canonical and legacy.exists():
+            import shutil
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy, canonical)
+            return canonical
 
     return None
 
@@ -121,8 +123,6 @@ _env_path = find_env_file()
 
 if _env_path:
     load_dotenv(_env_path)
-else:
-    load_dotenv()
 
 # Log which .env was loaded (helpful for debugging EXE packaging issues)
 import logging as _logging
@@ -158,6 +158,7 @@ class BotConfig:
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
+    openai_web_search: bool = False
 
     # === WeChat Backend ===
     wechat_backend: str = "wcdb"
@@ -474,6 +475,7 @@ def load_config() -> BotConfig:
         "openai_api_key": os.getenv("OPENAI_API_KEY", "").strip(),
         "openai_base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip(),
         "openai_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip(),
+        "openai_web_search": os.getenv("OPENAI_WEB_SEARCH", "false").strip().lower() == "true",
         # deepseek_model handled conditionally below (dataclass default)
         "wechat_backend": os.getenv("WECHAT_BACKEND", "wcdb").strip(),
         "wechat_groups": _decode_wechat_groups(os.getenv("WECHAT_GROUPS", "*")),

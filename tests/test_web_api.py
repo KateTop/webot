@@ -1301,6 +1301,30 @@ class ApiConfigEndpointTests(unittest.TestCase):
                 f.unlink(missing_ok=True)
             tmp_dir.rmdir()
 
+    def test_import_keeps_masked_key_and_missing_new_option(self):
+        """An older masked export must not reset settings absent from it."""
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            env.write_text(
+                "AI_BACKEND=openai\nOPENAI_API_KEY=real-test-key\n"
+                "OPENAI_WEB_SEARCH=true\nCUSTOM_OPTION=keep\n", encoding="utf-8",
+            )
+            body = json.dumps({
+                "ai_backend": "openai", "openai_api_key": "real***-key",
+                "openai_model": "new-model",
+            }).encode()
+            with patch("src.web.server._find_or_create_env", return_value=env):
+                _, sock = _build_handler("/api/config/import", method="POST", body=body,
+                                         headers={"Content-Type": "application/json",
+                                                  "Content-Length": str(len(body))})
+            result = json.loads(sock.get_response_text().split("\r\n\r\n", 1)[1])
+            self.assertTrue(result["ok"], result.get("error"))
+            saved = env.read_text(encoding="utf-8")
+            self.assertIn("OPENAI_API_KEY=real-test-key", saved)
+            self.assertIn("OPENAI_WEB_SEARCH=true", saved)
+            self.assertIn("CUSTOM_OPTION=keep", saved)
+            self.assertIn("OPENAI_MODEL=new-model", saved)
+
     def test_save_config_does_not_overwrite_masked_openai_key(self):
         """Saving a masked OPENAI_API_KEY must not clobber the real secret."""
         tmp_dir = Path(tempfile.mkdtemp())

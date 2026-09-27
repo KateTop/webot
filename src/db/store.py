@@ -203,6 +203,21 @@ class MessageStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def search_group_messages(self, chat_id: str, keyword: str,
+                              since_ts: int, limit: int = 20) -> list[dict]:
+        """Search only one group; return recent evidence in chronological order."""
+        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT message_id, chat_id, sender_id, sender_name, content,
+                          msg_type, timestamp FROM messages
+                   WHERE chat_id = ? AND timestamp >= ?
+                     AND content LIKE ? ESCAPE '\\'
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (chat_id, since_ts, f"%{escaped}%", min(max(limit, 1), 20)),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
     def was_recently_triggered(self, chat_id: str,
                                 window_sec: int) -> bool:
         """Check if a trigger was processed for this chat recently."""

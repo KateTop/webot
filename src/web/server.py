@@ -323,26 +323,37 @@ def _detect_wxid_and_db_path():
 
 def _set_env_key(env_path: Path, key: str, value: str) -> None:
     """Set or update one key=value in a .env file atomically."""
-    if not env_path.exists():
-        env_path.write_text(f"{key}={value}\n", encoding="utf-8")
-        return
-    lines = env_path.read_text(encoding="utf-8").splitlines()
-    new_lines, found = [], False
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            k = stripped.split("=", 1)[0].strip()
-            if k == key:
-                new_lines.append(f"{key}={value}")
-                found = True
-                continue
-        new_lines.append(line)
-    if not found:
-        new_lines.append(f"{key}={value}")
-    tmp = env_path.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
+    _update_env(env_path, {key: value})
+
+
+def _update_env(env_path: Path, updates: dict) -> list[str]:
+    """Serialize a complete read-modify-write; retain unknown keys and secrets."""
     with _env_write_lock:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+        # Masked export values must never replace stored credentials.
+        safe = {k: str(v) for k, v in updates.items()
+                if v is not None and not (isinstance(v, str) and "***" in v
+                                      and ("KEY" in k or "SECRET" in k))}
+        if any("\n" in value or "\r" in value for value in safe.values()):
+            raise ValueError("配置值不能包含换行符")
+        seen = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            key = stripped.split("=", 1)[0].strip() if stripped and not stripped.startswith("#") and "=" in stripped else None
+            if key in safe:
+                new_lines.append(f"{key}={safe[key]}")
+                seen.add(key)
+            else:
+                new_lines.append(line)
+        for key, value in safe.items():
+            if key not in seen:
+                new_lines.append(f"{key}={value}")
+        tmp = env_path.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
         tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         os.replace(tmp, env_path)
+        return list(safe)
 
 
 def _write_onboarding_to_env(env_path):
@@ -367,29 +378,21 @@ def _write_onboarding_to_env(env_path):
             "WCDB_KEY": _onboarding_data.get("key", ""),
             "ONBOARDING_DONE": "true",
         }
-    # Preserve existing keys not managed by onboarding
-    if env_path.exists():
-        lines = []
-        seen = set()
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#") and "=" in stripped:
-                key = stripped.split("=", 1)[0].strip()
-                if key in env_map and env_map[key] is not None:
-                    lines.append(f"{key}={env_map[key]}")
-                    seen.add(key)
-                    continue
-            lines.append(line)
-        for key, val in env_map.items():
-            if key not in seen and val is not None:
-                lines.append(f"{key}={val}")
-        content = "\n".join(lines) + "\n"
-    else:
-        content = "\n".join(f"{k}={v}" for k, v in env_map.items() if v is not None) + "\n"
-
-    tmp_path = env_path.with_suffix(".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    os.replace(tmp_path, env_path)
+    source_keys = {
+        "AI_BACKEND": "ai_backend", "DEEPSEEK_API_KEY": "deepseek_api_key",
+        "DEEPSEEK_BASE_URL": "deepseek_base_url", "DEEPSEEK_MODEL": "deepseek_model",
+        "OPENAI_API_KEY": "openai_api_key", "OPENAI_BASE_URL": "openai_base_url",
+        "OPENAI_MODEL": "openai_model", "ANTHROPIC_API_KEY": "anthropic_api_key",
+        "ANTHROPIC_BASE_URL": "anthropic_base_url", "SUMMARIZE_MODEL": "summarize_model",
+        "WECHAT_BACKEND": "wechat_backend", "WECHAT_GROUPS": "wechat_groups",
+        "BOT_DISPLAY_NAME": "bot_display_name", "PROACTIVE_ENABLED": "proactive_enabled",
+        "STICKY_MENTION_ENABLED": "sticky_mention_enabled", "WCDB_KEY": "key",
+    }
+    with _onboarding_lock:
+        provided = {key: env_map[key] for key, source in source_keys.items()
+                    if source in _onboarding_data}
+    provided["ONBOARDING_DONE"] = "true"
+    _update_env(env_path, provided)
     logger.info("Onboarding complete — wrote .env")
 
 
@@ -1030,7 +1033,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         # Only delegate specific API paths; return 405 for unknown POST paths
-        if self.path in ("/api/config", "/api/config/import", "/api/start", "/api/stop",
+        if self.path in ("/api/config", "/api/config/import", "/api/prompts", "/api/start", "/api/stop",
                          "/api/nicknames",
                          "/api/welcome/templates",
                          "/api/onboarding/reset",
@@ -1052,6 +1055,21 @@ class _UIHandler(SimpleHTTPRequestHandler):
         self._handle_request()
 
     def _handle_request(self):
+        if self.path == "/api/prompts":
+            from src.summarize.prompt_settings import load_prompt_settings, save_prompt_settings
+            try:
+                if self.command == "POST":
+                    length = int(self.headers.get("Content-Length", 0))
+                    if length > 30000:
+                        raise ValueError("Prompt 配置过大")
+                    data = json.loads(self.rfile.read(length) if length else b"{}")
+                    prompts = save_prompt_settings(data)
+                else:
+                    prompts = load_prompt_settings()
+                self.send_json({"ok": True, "prompts": prompts})
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json({"ok": False, "error": str(exc)})
+            return
         # ── WebSocket upgrade ─────────────────────────────────────────
         if self.path == "/ws":
             connection_header = self.headers.get("Connection", "").lower()
@@ -1117,6 +1135,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 "openai_api_key": _mask_key(raw.get("OPENAI_API_KEY", "")),
                 "openai_base_url": raw.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
                 "openai_model": raw.get("OPENAI_MODEL", "gpt-4o-mini"),
+                "openai_web_search": raw.get("OPENAI_WEB_SEARCH", "false").lower() == "true",
                 "anthropic_api_key": _mask_key(raw.get("ANTHROPIC_API_KEY", "")),
                 "anthropic_base_url": raw.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
                 "summarize_model": raw.get("SUMMARIZE_MODEL", "claude-haiku-4-5-20251001"),
@@ -1177,6 +1196,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "openai_api_key": _mask_key(raw.get("OPENAI_API_KEY", "")),
                     "openai_base_url": raw.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
                     "openai_model": raw.get("OPENAI_MODEL", "gpt-4o-mini"),
+                    "openai_web_search": raw.get("OPENAI_WEB_SEARCH", "false").lower() == "true",
                     "anthropic_api_key": _mask_key(raw.get("ANTHROPIC_API_KEY", "")),
                     "anthropic_base_url": raw.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
                     "summarize_model": raw.get("SUMMARIZE_MODEL", "claude-haiku-4-5-20251001"),
@@ -1224,11 +1244,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
             try:
                 config = json.loads(body)
                 env_path = _find_or_create_env()
-                if env_path.exists():
-                    lines = env_path.read_text(encoding="utf-8").splitlines()
-                else:
-                    lines = []
-                new_lines = []
                 updates = {
                     "DEEPSEEK_API_KEY": config.get("deepseek_api_key"),
                     "DEEPSEEK_BASE_URL": config.get("deepseek_base_url"),
@@ -1236,6 +1251,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "OPENAI_API_KEY": config.get("openai_api_key"),
                     "OPENAI_BASE_URL": config.get("openai_base_url"),
                     "OPENAI_MODEL": config.get("openai_model"),
+                    "OPENAI_WEB_SEARCH": str(config.get("openai_web_search", False)).lower(),
                     "ANTHROPIC_API_KEY": config.get("anthropic_api_key"),
                     "ANTHROPIC_BASE_URL": config.get("anthropic_base_url"),
                     "SUMMARIZE_MODEL": config.get("summarize_model"),
@@ -1277,33 +1293,12 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     val = updates.get(masked_key)
                     if isinstance(val, str) and "***" in val:
                         updates[masked_key] = None  # skip → keep existing
-                seen = set()
-                for line in lines:
-                    stripped = line.strip()
-                    if stripped and not stripped.startswith("#") and "=" in stripped:
-                        key = stripped.split("=", 1)[0].strip()
-                        if key in updates and updates[key] is not None:
-                            new_lines.append(f"{key}={updates[key]}")
-                            seen.add(key)
-                            continue
-                    new_lines.append(line)
-                for key, val in updates.items():
-                    if key not in seen and val is not None:
-                        new_lines.append(f"{key}={val}")
-                # Atomic write: unique temp file + lock to prevent races
-                # across HTTP threads and background extraction thread.
-                tmp_path = env_path.with_suffix(
-                    f".tmp.{os.getpid()}.{threading.get_ident()}"
-                )
-                with _env_write_lock:
-                    tmp_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-                    os.replace(tmp_path, env_path)
-                for key, val in updates.items():
-                    if val is not None:
-                        os.environ[key] = str(val)
+                saved_keys = _update_env(env_path, updates)
+                for key in saved_keys:
+                    os.environ[key] = str(updates[key])
                 self.send_json({
                     "ok": True,
-                    "saved": list(seen),
+                    "saved": saved_keys,
                     "requires_restart": True,
                 })
             except Exception as e:
@@ -1323,10 +1318,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 if not has_keys:
                     raise ValueError("无效的配置文件格式：缺少必需字段")
                 env_path = _find_or_create_env()
-                if env_path.exists():
-                    lines = env_path.read_text(encoding="utf-8").splitlines()
-                else:
-                    lines = []
                 updates = {
                     "DEEPSEEK_API_KEY": config.get("deepseek_api_key"),
                     "DEEPSEEK_BASE_URL": config.get("deepseek_base_url"),
@@ -1334,6 +1325,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "OPENAI_API_KEY": config.get("openai_api_key"),
                     "OPENAI_BASE_URL": config.get("openai_base_url"),
                     "OPENAI_MODEL": config.get("openai_model"),
+                    "OPENAI_WEB_SEARCH": str(config.get("openai_web_search", False)).lower(),
                     "ANTHROPIC_API_KEY": config.get("anthropic_api_key"),
                     "ANTHROPIC_BASE_URL": config.get("anthropic_base_url"),
                     "SUMMARIZE_MODEL": config.get("summarize_model"),
@@ -1363,35 +1355,17 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "VOICE_OPENAI_BASE_URL": config.get("voice_openai_base_url", ""),
                     "VOICE_LOCAL_MODEL": config.get("voice_local_model", "small"),
                 }
+                # Older exports omit newer fields. Do not reset those settings.
+                updates = {key: value for key, value in updates.items()
+                           if key.lower() in config}
                 updates.update(_feishu_updates_from_config(config))
-                new_lines = []
-                seen = set()
-                for line in lines:
-                    stripped = line.strip()
-                    if stripped and not stripped.startswith("#") and "=" in stripped:
-                        key = stripped.split("=", 1)[0].strip()
-                        if key in updates and updates[key] is not None:
-                            new_lines.append(f"{key}={updates[key]}")
-                            seen.add(key)
-                            continue
-                    new_lines.append(line)
-                for key, val in updates.items():
-                    if key not in seen and val is not None:
-                        new_lines.append(f"{key}={val}")
-                # Atomic write with unique temp file + lock
-                tmp_path = env_path.with_suffix(
-                    f".tmp.{os.getpid()}.{threading.get_ident()}"
-                )
-                with _env_write_lock:
-                    tmp_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-                    os.replace(tmp_path, env_path)
+                saved_keys = _update_env(env_path, updates)
                 # Update in-process environment
-                for key, val in updates.items():
-                    if val is not None:
-                        os.environ[key] = str(val)
+                for key in saved_keys:
+                    os.environ[key] = str(updates[key])
                 self.send_json({
                     "ok": True,
-                    "imported": list(seen),
+                    "imported": saved_keys,
                     "requires_restart": True,
                 })
             except ValueError as e:

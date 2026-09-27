@@ -32,6 +32,25 @@ function TypewriterText({ text, speed = 15 }) {
 function AiSection({ form, update }) {
   const isDeepSeek = form.ai_backend === 'deepseek'
   const isOpenAI = form.ai_backend === 'openai'
+  const [prompts, setPrompts] = useState({ chat: '', summary: '' })
+  const [promptStatus, setPromptStatus] = useState('')
+
+  useEffect(() => {
+    fetch('http://127.0.0.1:7327/api/prompts').then(r => r.json())
+      .then(data => { if (data.ok) setPrompts(data.prompts) })
+      .catch(() => setPromptStatus('无法读取 Prompt 配置'))
+  }, [])
+
+  async function savePrompts() {
+    try {
+      const response = await fetch('http://127.0.0.1:7327/api/prompts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prompts),
+      })
+      const data = await response.json()
+      setPromptStatus(data.ok ? 'Prompt 已保存，下次调用生效' : (data.error || '保存失败'))
+    } catch { setPromptStatus('无法连接到服务器') }
+  }
 
   return (
     <div>
@@ -63,11 +82,14 @@ function AiSection({ form, update }) {
           <Field label="OpenAI API Key" hint="OpenAI / GLM / Moonshot 等服务商的 API Key" error={!form.openai_api_key ? '请填写 API Key' : null}>
             <Input type="password" value={form.openai_api_key} onChange={v => update('openai_api_key', v)} placeholder="sk-xxxxxxxxxxxxxxxx" />
           </Field>
-          <Field label="API Base URL" hint="GLM 填 https://open.bigmodel.cn/api/paas/v4/；OpenAI 官方填 https://api.openai.com/v1">
+          <Field label="API Base URL" hint="Sub2API 填 http://127.0.0.1:8080/v1；GLM 填 https://open.bigmodel.cn/api/paas/v4/">
             <Input value={form.openai_base_url} onChange={v => update('openai_base_url', v)} placeholder="https://api.openai.com/v1" />
           </Field>
           <Field label="模型名" hint="填写服务商提供的模型名，如 glm-4-flash / gpt-4o-mini">
             <Input value={form.openai_model} onChange={v => update('openai_model', v)} placeholder="gpt-4o-mini" />
+          </Field>
+          <Field label="联网搜索" hint="仅适用于支持 Chat Completions web_search 工具的 Sub2API 渠道；开启后群聊问答会请求搜索">
+            <Toggle enabled={!!form.openai_web_search} onChange={v => update('openai_web_search', v)} />
           </Field>
         </>
       ) : (
@@ -86,7 +108,20 @@ function AiSection({ form, update }) {
           </Field>
         </>
       )}
-
+      <div className="mt-7 border-t border-border-main pt-5">
+        <h4 className="text-sm font-semibold mb-2">自定义 Prompt</h4>
+        <p className="text-xs mb-4">追加到内置指令；留空使用默认行为。修改后下次 AI 调用生效。</p>
+        {['chat', 'summary'].map(key => (
+          <Field key={key} label={key === 'chat' ? '群聊问答指令' : '群聊总结指令'}>
+            <textarea className="w-full min-h-28 rounded-xl border border-border-main bg-bg-card p-3 text-sm text-text-main"
+              value={prompts[key]} maxLength={12000}
+              onChange={e => setPrompts(prev => ({ ...prev, [key]: e.target.value }))}
+              placeholder={key === 'chat' ? '例如：回答群聊历史问题时，说明依据和时间。' : '例如：先列出结论，再列出待办事项。'} />
+          </Field>
+        ))}
+        <button type="button" onClick={savePrompts} className="rounded-full bg-brand-green px-4 py-2 text-sm text-white">保存 Prompt</button>
+        {promptStatus && <p className="mt-2 text-xs">{promptStatus}</p>}
+      </div>
     </div>
   )
 }
@@ -1685,6 +1720,7 @@ function SandboxSection({ form }) {
           deepseek_base_url: form.deepseek_base_url,
           openai_api_key: form.openai_api_key,
           openai_model: form.openai_model,
+          openai_web_search: form.openai_web_search,
           openai_base_url: form.openai_base_url,
           anthropic_api_key: form.anthropic_api_key,
           anthropic_base_url: form.anthropic_base_url,
@@ -1818,7 +1854,7 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
   const [form, setForm] = useState({
     ai_backend: 'deepseek', deepseek_api_key: '', deepseek_model: 'deepseek-v4-flash',
     deepseek_base_url: 'https://api.deepseek.com',
-    openai_api_key: '', openai_base_url: 'https://api.openai.com/v1', openai_model: 'gpt-4o-mini',
+    openai_api_key: '', openai_base_url: 'https://api.openai.com/v1', openai_model: 'gpt-4o-mini', openai_web_search: false,
     anthropic_api_key: '', anthropic_base_url: 'https://api.anthropic.com',
     summarize_model: 'claude-haiku-4-5-20251001',
     bot_display_name: '', wechat_backend: 'wcdb', wechat_groups: '*',
@@ -1941,6 +1977,7 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
           openai_api_key: form.openai_api_key,
           openai_base_url: form.openai_base_url,
           openai_model: form.openai_model,
+          openai_web_search: form.openai_web_search,
           anthropic_api_key: form.anthropic_api_key,
           anthropic_base_url: form.anthropic_base_url,
           summarize_model: form.summarize_model,
