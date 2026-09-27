@@ -16,7 +16,9 @@ CONSOLIDATE_MSG_THRESHOLD = 50
 CONSOLIDATE_TIME_THRESHOLD_SEC = 3600
 MAX_NEW_MSGS_PER_CONSOLIDATION = 100
 CONSOLIDATE_FAILURE_COOLDOWN_SEC = 600
-CONSOLIDATE_CALL_TIMEOUT_SEC = 90
+# Up to three providers, each with one request plus three 25s retries and
+# 2+4+8s backoff: 3 * (4*25 + 14) = 342s, plus response overhead.
+CONSOLIDATE_CALL_TIMEOUT_SEC = 390
 
 
 class MemoryConsolidator:

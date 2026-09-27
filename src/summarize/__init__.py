@@ -17,6 +17,7 @@ from .models import ParticipantContribution, SummaryResult
 from .failover import FailoverSummarizer
 
 logger = logging.getLogger(__name__)
+POOL_ATTEMPTS_PER_PROVIDER = 4  # first request + three retries
 
 __all__ = [
     "AbstractSummarizer",
@@ -60,8 +61,9 @@ def create_summarizer(config) -> AbstractSummarizer:
     return providers[0][1] if len(providers) == 1 else FailoverSummarizer(providers)
 
 
-def _create_single(config, backend: str, quick_timeout: bool) -> AbstractSummarizer:
-    retry_kwargs = {"max_retries": 1} if quick_timeout else {}
+def _create_single(config, backend: str, pool_mode: bool) -> AbstractSummarizer:
+    retry_kwargs = ({"max_retries": POOL_ATTEMPTS_PER_PROVIDER}
+                    if pool_mode else {})
 
     if backend == "deepseek":
         logger.info("Creating DeepSeekSummarizer (model=%s)", config.deepseek_model)

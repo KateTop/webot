@@ -62,7 +62,7 @@ function AiSection({ form, update }) {
         ]} />
       </Field>
 
-      <Field label="超时后轮换顺序" hint="逗号分隔，如 openai,claude；首选服务始终排在最前。仅在请求超时时切换，备用服务需先配置 API Key，重启后生效。">
+      <Field label="超时后轮换顺序" hint="逗号分隔，如 openai,claude；每个服务先请求 1 次、再重试 3 次，仍超时才切换下一个。备用服务需配置 API Key，重启后生效。">
         <Input value={form.ai_fallback_order || ''} onChange={v => update('ai_fallback_order', v)} placeholder="openai,claude" />
       </Field>
 
