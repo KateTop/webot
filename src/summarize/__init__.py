@@ -17,7 +17,6 @@ from .models import ParticipantContribution, SummaryResult
 from .failover import FailoverSummarizer
 
 logger = logging.getLogger(__name__)
-POOL_ATTEMPTS_PER_PROVIDER = 4  # first request + three retries
 
 __all__ = [
     "AbstractSummarizer",
@@ -51,19 +50,20 @@ def create_summarizer(config) -> AbstractSummarizer:
     for name in order:
         key = {"deepseek": config.deepseek_api_key,
                "openai": config.openai_api_key,
-               "claude": config.anthropic_api_key}.get(name)
-        if name not in ("deepseek", "openai", "claude"):
+               "claude": config.anthropic_api_key,
+               "custom": config.custom_api_key}.get(name)
+        if name not in ("deepseek", "openai", "claude", "custom"):
             raise ValueError(f"Unknown AI_BACKEND: {name}")
         if not key and name != order[0]:
             logger.warning("Skipping unconfigured AI fallback: %s", name)
             continue
-        providers.append((name, _create_single(config, name, len(order) > 1)))
+        provider = _create_single(config, name, len(order) > 1)
+        provider.max_retries = getattr(config, "ai_retry_count", 3) + 1
+        providers.append((name, provider))
     return providers[0][1] if len(providers) == 1 else FailoverSummarizer(providers)
 
 
 def _create_single(config, backend: str, pool_mode: bool) -> AbstractSummarizer:
-    retry_kwargs = ({"max_retries": POOL_ATTEMPTS_PER_PROVIDER}
-                    if pool_mode else {})
 
     if backend == "deepseek":
         logger.info("Creating DeepSeekSummarizer (model=%s)", config.deepseek_model)
@@ -72,7 +72,6 @@ def _create_single(config, backend: str, pool_mode: bool) -> AbstractSummarizer:
             model=config.deepseek_model,
             base_url=config.deepseek_base_url,
             chunk_size=config.chunk_size,
-            **retry_kwargs,
         )
 
     elif backend == "claude":
@@ -82,7 +81,6 @@ def _create_single(config, backend: str, pool_mode: bool) -> AbstractSummarizer:
             model=config.summarize_model,
             base_url=config.anthropic_base_url,
             chunk_size=config.chunk_size,
-            **retry_kwargs,
         )
 
     elif backend == "openai":
@@ -93,7 +91,16 @@ def _create_single(config, backend: str, pool_mode: bool) -> AbstractSummarizer:
             base_url=config.openai_base_url,
             chunk_size=config.chunk_size,
             web_search=config.openai_web_search,
-            **retry_kwargs,
+        )
+
+    elif backend == "custom":
+        if not config.custom_base_url or not config.custom_model:
+            raise ValueError("Custom backend requires base URL and model")
+        return OpenAISummarizer(
+            api_key=config.custom_api_key,
+            model=config.custom_model,
+            base_url=config.custom_base_url,
+            chunk_size=config.chunk_size,
         )
 
     else:

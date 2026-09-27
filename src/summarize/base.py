@@ -118,6 +118,8 @@ class AbstractSummarizer(ABC):
 {context_section}对方消息：
 {current_message}
 
+先判断对方问题是否与最近聊天或引用内容有关；有关才利用对应内容，没有依据就追问，不要随意接到旧话题。长期记忆仅用于解释长期人物和事件背景，不能覆盖最近的明确事实。
+
 只输出你要发的那句话。"""
 
     def chat(self, message: str,
@@ -125,7 +127,9 @@ class AbstractSummarizer(ABC):
              requester_name: str = "",
              bot_name: str = "群聊小助手",
              group_name: str = "群聊",
-             group_memory: str = "") -> str:
+             group_memory: str = "",
+             quoted_content: str = "",
+             trigger_kind: str = "艾特") -> str:
         """Conversational AI response for @bot mentions.
 
         Args:
@@ -154,16 +158,13 @@ class AbstractSummarizer(ABC):
         message = _esc(message)
 
         # ── 0. Memory display ────────────────────────────────────
-        memory_display = (
-            group_memory if group_memory
-            else "（你刚进这个群，还没有形成对这个群的印象）"
-        )
+        memory_display = group_memory or "（本次未查询长期记忆）"
 
         # ── 1. Build context section ───────────────────────────────
         context_section = ""
         if context_messages and len(context_messages) > 0:
             context_lines = []
-            for m in context_messages[-20:]:
+            for m in context_messages:
                 sender = m.get("sender_name", "?")
                 content = m.get("content", "")
                 if content:
@@ -172,10 +173,12 @@ class AbstractSummarizer(ABC):
                     context_lines.append(f"{when} {sender}: {content[:500]}")
             if context_lines:
                 context_section = (
-                    "当前群聊记录（引用时标明日期；没有证据就说明未找到）：\n"
+                    "最近群聊记录（仅作候选上下文，先判断相关性；引用时标明日期）：\n"
                     + "\n".join(context_lines)
                     + "\n\n"
                 )
+        if quoted_content:
+            context_section += f"对方引用的机器人原消息：{quoted_content[:500]}\n\n"
 
         # ── 2. Build full system prompt ────────────────────────────
         # Escape any user-supplied strings that could contain { or }
@@ -195,9 +198,7 @@ class AbstractSummarizer(ABC):
         system_prompt = with_user_instructions(system_prompt, "chat")
 
         # ── 3. Build user message (just the trigger) ──────────────
-        user_prompt = (
-            f"{requester_name or '群友'} @了你，请回复：{message}"
-        )
+        user_prompt = f"{requester_name or '群友'}通过{trigger_kind}向你提问，请回复：{message}"
 
         # ── 4. Call AI API (backend-specific) ─────────────────────
         return self._retry_with_backoff(
@@ -362,6 +363,8 @@ class AbstractSummarizer(ABC):
             recent_messages=recent_messages,
             group_memory=memory_display,
         )
+        from .prompt_settings import with_user_instructions
+        system_prompt = with_user_instructions(system_prompt, "chat")
 
         user_prompt = "如果你想说话，现在就发一条。如果不想说话，回复空白。"
 
@@ -620,7 +623,7 @@ class AbstractSummarizer(ABC):
                 last_error = e
                 if attempt == self.max_retries:
                     break
-                wait = 2 ** attempt
+                wait = min(2 ** attempt, 16)
                 logger.warning(
                     "Transient error on '%s' (attempt %d/%d). "
                     "Waiting %ds... (%s)",

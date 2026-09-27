@@ -16,9 +16,19 @@ CONSOLIDATE_MSG_THRESHOLD = 50
 CONSOLIDATE_TIME_THRESHOLD_SEC = 3600
 MAX_NEW_MSGS_PER_CONSOLIDATION = 100
 CONSOLIDATE_FAILURE_COOLDOWN_SEC = 600
-# Up to three providers, each with one request plus three 25s retries and
-# 2+4+8s backoff: 3 * (4*25 + 14) = 342s, plus response overhead.
 CONSOLIDATE_CALL_TIMEOUT_SEC = 390
+
+
+def _call_timeout(summarizer) -> int:
+    """Bound the outer wait to the configured provider and retry budget."""
+    providers = getattr(summarizer, "providers", [("primary", summarizer)])
+    if not isinstance(providers, list):
+        return CONSOLIDATE_CALL_TIMEOUT_SEC
+    total = 0
+    for _, provider in providers:
+        attempts = max(1, int(getattr(provider, "max_retries", 3)))
+        total += attempts * 25 + sum(min(2 ** n, 16) for n in range(1, attempts))
+    return total + 60
 
 
 class MemoryConsolidator:
@@ -92,7 +102,7 @@ class MemoryConsolidator:
             new_messages=new_messages,
         )
         try:
-            updated = future.result(timeout=CONSOLIDATE_CALL_TIMEOUT_SEC)
+            updated = future.result(timeout=_call_timeout(self._summarizer))
         except concurrent.futures.TimeoutError:
             with self._lock:
                 self._timed_out[chat_id] = future

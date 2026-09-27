@@ -608,6 +608,14 @@ class WcdbBackend(AbstractWeChatBackend):
         sender = str(msg.get("sender_username", msg.get("senderUsername", msg.get("sender", ""))))
         content = str(msg.get("message_content", msg.get("content", ""))).strip()
         local_type = int(msg.get("localType", msg.get("msg_type", 1)))
+        from .quote import parse_quote
+        own_wxid = (getattr(self._client, "_config", None) or {}).get("myWxid", "")
+        quotes_bot, quote_text, quoted_content = (
+            parse_quote(content, own_wxid) if local_type == 49
+            else (False, content, "")
+        )
+        if quotes_bot:
+            content = quote_text
 
         # ── Voice recognition ──────────────────────────────────────
         # Voice messages (localType=34) have empty message_content;
@@ -713,6 +721,8 @@ class WcdbBackend(AbstractWeChatBackend):
             "msg_type": int(msg.get("localType", msg.get("msg_type", 1))),
             "timestamp": ts,
             "is_at_mentioned": is_at,
+            "quotes_bot": quotes_bot,
+            "quoted_content": quoted_content[:500] if quotes_bot else "",
             "is_group": True,
             "is_system_join": is_system_join,
             "new_member_id": new_member_id,

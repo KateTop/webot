@@ -379,6 +379,18 @@ def _submitted_config_updates(config: dict, updates: dict) -> dict:
             if key.lower() in config and value is not None}
 
 
+def _validate_ai_numeric_settings(config: dict) -> None:
+    for field, low, high in (("ai_retry_count", 0, 10),
+                             ("chat_context_count", 1, 100)):
+        if field in config:
+            try:
+                value = int(config[field])
+            except (TypeError, ValueError):
+                raise ValueError(f"{field} 必须填写 {low}–{high} 的整数") from None
+            if not low <= value <= high:
+                raise ValueError(f"{field} 必须填写 {low}–{high} 的整数")
+
+
 def _write_onboarding_to_env(env_path):
     """Write accumulated onboarding data to .env file atomically."""
     with _onboarding_lock:
@@ -1222,6 +1234,8 @@ class _UIHandler(SimpleHTTPRequestHandler):
             config_data = {
                 "ai_backend": raw.get("AI_BACKEND", "deepseek"),
                 "ai_fallback_order": raw.get("AI_FALLBACK_ORDER", ""),
+                "ai_retry_count": _int_env(raw.get("AI_RETRY_COUNT", "3"), 3),
+                "chat_context_count": _int_env(raw.get("CHAT_CONTEXT_COUNT", "30"), 30),
                 "deepseek_api_key": _mask_key(raw.get("DEEPSEEK_API_KEY", "")),
                 "deepseek_base_url": raw.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                 "deepseek_model": raw.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
@@ -1229,6 +1243,9 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 "openai_base_url": raw.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
                 "openai_model": raw.get("OPENAI_MODEL", "gpt-4o-mini"),
                 "openai_web_search": raw.get("OPENAI_WEB_SEARCH", "false").lower() == "true",
+                "custom_api_key": _mask_key(raw.get("CUSTOM_API_KEY", "")),
+                "custom_base_url": raw.get("CUSTOM_BASE_URL", ""),
+                "custom_model": raw.get("CUSTOM_MODEL", ""),
                 "anthropic_api_key": _mask_key(raw.get("ANTHROPIC_API_KEY", "")),
                 "anthropic_base_url": raw.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
                 "summarize_model": raw.get("SUMMARIZE_MODEL", "claude-haiku-4-5-20251001"),
@@ -1284,6 +1301,8 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 export_data = {
                     "ai_backend": raw.get("AI_BACKEND", "deepseek"),
                     "ai_fallback_order": raw.get("AI_FALLBACK_ORDER", ""),
+                    "ai_retry_count": _int_env(raw.get("AI_RETRY_COUNT", "3"), 3),
+                    "chat_context_count": _int_env(raw.get("CHAT_CONTEXT_COUNT", "30"), 30),
                     "deepseek_api_key": _mask_key(raw.get("DEEPSEEK_API_KEY", "")),
                     "deepseek_base_url": raw.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                     "deepseek_model": raw.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
@@ -1291,6 +1310,9 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "openai_base_url": raw.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
                     "openai_model": raw.get("OPENAI_MODEL", "gpt-4o-mini"),
                     "openai_web_search": raw.get("OPENAI_WEB_SEARCH", "false").lower() == "true",
+                    "custom_api_key": _mask_key(raw.get("CUSTOM_API_KEY", "")),
+                    "custom_base_url": raw.get("CUSTOM_BASE_URL", ""),
+                    "custom_model": raw.get("CUSTOM_MODEL", ""),
                     "anthropic_api_key": _mask_key(raw.get("ANTHROPIC_API_KEY", "")),
                     "anthropic_base_url": raw.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
                     "summarize_model": raw.get("SUMMARIZE_MODEL", "claude-haiku-4-5-20251001"),
@@ -1337,6 +1359,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
             body = self.rfile.read(content_len) if content_len else b"{}"
             try:
                 config = json.loads(body)
+                _validate_ai_numeric_settings(config)
                 env_path = _find_or_create_env()
                 updates = {
                     "DEEPSEEK_API_KEY": config.get("deepseek_api_key"),
@@ -1346,11 +1369,16 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "OPENAI_BASE_URL": config.get("openai_base_url"),
                     "OPENAI_MODEL": config.get("openai_model"),
                     "OPENAI_WEB_SEARCH": str(config.get("openai_web_search", False)).lower(),
+                    "CUSTOM_API_KEY": config.get("custom_api_key"),
+                    "CUSTOM_BASE_URL": config.get("custom_base_url"),
+                    "CUSTOM_MODEL": config.get("custom_model"),
                     "ANTHROPIC_API_KEY": config.get("anthropic_api_key"),
                     "ANTHROPIC_BASE_URL": config.get("anthropic_base_url"),
                     "SUMMARIZE_MODEL": config.get("summarize_model"),
                     "AI_BACKEND": config.get("ai_backend"),
                     "AI_FALLBACK_ORDER": config.get("ai_fallback_order"),
+                    "AI_RETRY_COUNT": config.get("ai_retry_count"),
+                    "CHAT_CONTEXT_COUNT": config.get("chat_context_count"),
                     "BOT_DISPLAY_NAME": config.get("bot_display_name"),
                     "WECHAT_BACKEND": config.get("wechat_backend"),
                     "WECHAT_GROUPS": config.get("wechat_groups") or "*",
@@ -1383,7 +1411,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 #     load-config returns masked keys (e.g. "sk-r***t-k"); the
                 #     frontend sends them back unchanged.  Writing a masked
                 #     string to .env permanently destroys the real secret.
-                for masked_key in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+                for masked_key in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "CUSTOM_API_KEY",
                                    "ANTHROPIC_API_KEY", "FEISHU_APP_SECRET",
                                    "VOICE_OPENAI_API_KEY"):
                     val = updates.get(masked_key)
@@ -1408,6 +1436,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
             body = self.rfile.read(content_len) if content_len else b"{}"
             try:
                 config = json.loads(body)
+                _validate_ai_numeric_settings(config)
                 # Basic validation: must look like a webot config export
                 expected_keys = ['ai_backend', 'deepseek_model', 'wechat_backend']
                 has_keys = any(k in config for k in expected_keys)
@@ -1422,11 +1451,16 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "OPENAI_BASE_URL": config.get("openai_base_url"),
                     "OPENAI_MODEL": config.get("openai_model"),
                     "OPENAI_WEB_SEARCH": str(config.get("openai_web_search", False)).lower(),
+                    "CUSTOM_API_KEY": config.get("custom_api_key"),
+                    "CUSTOM_BASE_URL": config.get("custom_base_url"),
+                    "CUSTOM_MODEL": config.get("custom_model"),
                     "ANTHROPIC_API_KEY": config.get("anthropic_api_key"),
                     "ANTHROPIC_BASE_URL": config.get("anthropic_base_url"),
                     "SUMMARIZE_MODEL": config.get("summarize_model"),
                     "AI_BACKEND": config.get("ai_backend"),
                     "AI_FALLBACK_ORDER": config.get("ai_fallback_order"),
+                    "AI_RETRY_COUNT": config.get("ai_retry_count"),
+                    "CHAT_CONTEXT_COUNT": config.get("chat_context_count"),
                     "BOT_DISPLAY_NAME": config.get("bot_display_name"),
                     "WECHAT_BACKEND": config.get("wechat_backend"),
                     "WECHAT_GROUPS": config.get("wechat_groups") or "*",
@@ -1857,6 +1891,12 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     sandbox_env_overrides["OPENAI_MODEL"] = data["openai_model"]
                 if data.get("openai_base_url"):
                     sandbox_env_overrides["OPENAI_BASE_URL"] = data["openai_base_url"]
+                for env_key, field in (("CUSTOM_API_KEY", "custom_api_key"),
+                                       ("CUSTOM_BASE_URL", "custom_base_url"),
+                                       ("CUSTOM_MODEL", "custom_model"),
+                                       ("AI_RETRY_COUNT", "ai_retry_count")):
+                    if data.get(field) is not None and data.get(field) != "":
+                        sandbox_env_overrides[env_key] = data[field]
                 if data.get("anthropic_api_key"):
                     sandbox_env_overrides["ANTHROPIC_API_KEY"] = data["anthropic_api_key"]
                 if data.get("anthropic_base_url"):
@@ -1900,6 +1940,9 @@ class _UIHandler(SimpleHTTPRequestHandler):
                         _apply_override("OPENAI_API_KEY", "openai_api_key")
                         _apply_override("OPENAI_MODEL", "openai_model")
                         _apply_override("OPENAI_BASE_URL", "openai_base_url")
+                        _apply_override("CUSTOM_API_KEY", "custom_api_key")
+                        _apply_override("CUSTOM_BASE_URL", "custom_base_url")
+                        _apply_override("CUSTOM_MODEL", "custom_model")
                         _apply_override("ANTHROPIC_API_KEY", "anthropic_api_key")
                         _apply_override("ANTHROPIC_BASE_URL", "anthropic_base_url")
                         _apply_override("SUMMARIZE_MODEL", "summarize_model")

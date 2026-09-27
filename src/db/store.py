@@ -275,6 +275,24 @@ class MessageStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def get_recent_messages(self, chat_id: str, before_ts: int,
+                            limit: int = 30, exclude_id: str = "") -> list[dict]:
+        """Latest messages in one group, returned in reading order."""
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT message_id, chat_id, sender_id, sender_name,
+                          content, msg_type, timestamp FROM messages
+                   WHERE chat_id = ? AND
+                     (timestamp < ? OR
+                      (timestamp = ? AND rowid < COALESCE(
+                          (SELECT rowid FROM messages WHERE message_id = ?),
+                          9223372036854775807)))
+                     AND message_id != ?
+                   ORDER BY timestamp DESC, rowid DESC LIMIT ?""",
+                (chat_id, before_ts, before_ts, exclude_id, exclude_id, limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
     def search_group_messages(self, chat_id: str, keyword: str,
                               since_ts: int, limit: int = 20) -> list[dict]:
         """Search only one group; return recent evidence in chronological order."""

@@ -21,9 +21,7 @@ from .todo.handler import TodoHandler, format_todo_reply
 logger = logging.getLogger(__name__)
 
 # ── Tuning constants ──────────────────────────────────────────────
-CHAT_CONTEXT_WINDOW_SEC = 600      # fetch last N seconds of chat as context for @mentions
 MAX_CONTENT_LENGTH = 997           # max chars per message sent to AI (997 + "..." = 1000)
-MAX_CONTENT_LINES = 20             # max context lines fed to AI chat prompt
 AT_MENTION_MAX_AGE_SEC = 300       # ignore @mentions older than 5 minutes (startup safety)
 WELCOME_MAX_AGE_SEC = 300          # ignore join events older than 5 minutes (startup safety)
 
@@ -162,7 +160,7 @@ class MessageRouter:
         # ── Route: @mention vs proactive ─────────────────────────
         # Sticky mention: if the user previously sent an empty @mention,
         # their next message is treated as if it were @mentioned (one-shot).
-        is_at = msg["is_at_mentioned"] or (
+        is_at = msg["is_at_mentioned"] or msg.get("quotes_bot", False) or (
             self._sticky is not None
             and self._sticky.consume(msg["chat_id"], msg["sender_id"])
         )
@@ -209,7 +207,8 @@ class MessageRouter:
             # ── Empty @mention → sticky listening mode ──────────────
             # User sent @bot but nothing else.  Register a sticky so
             # their next message (without @mention) still reaches the bot.
-            if not clean_content.strip() and self._sticky is not None:
+            if (not clean_content.strip() and not msg.get("quotes_bot")
+                    and self._sticky is not None):
                 self._sticky.register(msg["chat_id"], msg["sender_id"])
                 logger.info(
                     "Empty @mention from '%s' in %s — sticky listening active for %ds",
@@ -477,16 +476,20 @@ class MessageRouter:
             display_name, clean_content[:60],
         )
 
-        # Always fetch recent chat context for @mentions.
-        # The bot is @mentioned inside a group conversation — the surrounding
-        # chat is almost always relevant.  Keyword-based gating (e.g. "刚才",
-        # "之前") is too brittle: natural language has countless ways to
-        # reference prior chat without those specific words ("挑一件事评价一下",
-        # "怎么看", "那件事", etc.).
-        since = int(time.time()) - CHAT_CONTEXT_WINDOW_SEC
-        context = self._store.get_messages_since(
-            msg["chat_id"], since, limit=20,
-        )
+        # Read the latest N messages before the trigger, not the oldest N in
+        # a fixed time window. Exclude the trigger already persisted above.
+        count = max(1, min(getattr(self._config, "chat_context_count", 30), 100))
+        recent = getattr(self._store, "get_recent_messages", None)
+        if recent is None:  # compatibility with older store adapters
+            context = self._store.get_messages_since(
+                msg["chat_id"], msg.get("timestamp", int(time.time())) - 600,
+                limit=count,
+            )
+        else:
+            context = recent(
+                msg["chat_id"], msg.get("timestamp", int(time.time())),
+                limit=count, exclude_id=msg.get("message_id", ""),
+            )
         # Explicit history lookup is strictly scoped to the triggering group.
         query = clean_content.strip()
         for prefix in ("搜索群聊 ", "查询群聊 ", "查找群聊 "):
@@ -518,7 +521,10 @@ class MessageRouter:
                 requester_name=display_name,
                 bot_name=self._config.bot_display_name,
                 group_name=msg.get("group_name", msg.get("chat_id", "群聊")),
-                group_memory=self._get_group_memory(msg["chat_id"]),
+                group_memory=(self._get_group_memory(msg["chat_id"])
+                              if self._needs_long_term_memory(clean_content) else ""),
+                quoted_content=msg.get("quoted_content", ""),
+                trigger_kind="引用" if msg.get("quotes_bot") else "艾特",
             )
             ai_reply = self._nicks.resolve_wxids(ai_reply)
             # Guard against empty AI reply — sending a bare @mention is confusing
@@ -535,6 +541,14 @@ class MessageRouter:
                     and self._config.openai_web_search):
                 return f"@{display_name} 联网搜索失败，请检查 Sub2API 渠道和模型是否支持 web_search。"
             return f"@{display_name} 大脑短路了，稍等再试～"
+
+    @staticmethod
+    def _needs_long_term_memory(message: str) -> bool:
+        """Use persistent group memory for explicit historical/person questions."""
+        terms = ("以前", "之前", "历史", "长期", "一直", "过去", "上次", "曾经",
+                 "这个人", "那个人", "性格", "三观", "人物", "关系", "习惯", "经历",
+                 "记得", "还记得", "一贯", "经常", "趋势", "变化")
+        return any(term in message for term in terms)
 
     # ── Welcome handler ─────────────────────────────────────────
 

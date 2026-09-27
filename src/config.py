@@ -140,9 +140,11 @@ class BotConfig:
     """All configuration for the WeChat summarizer bot."""
 
     # === AI Backend ===
-    # "claude" | "deepseek" | "openai"
+    # "claude" | "deepseek" | "openai" | "custom"
     ai_backend: str = "claude"
     fallback_backends: list[str] = field(default_factory=list)
+    ai_retry_count: int = 3
+    chat_context_count: int = 30
 
     # === Claude (Anthropic) ===
     anthropic_api_key: str = ""
@@ -160,6 +162,9 @@ class BotConfig:
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
     openai_web_search: bool = False
+    custom_api_key: str = ""
+    custom_base_url: str = ""
+    custom_model: str = ""
 
     # === WeChat Backend ===
     wechat_backend: str = "wcdb"
@@ -304,6 +309,10 @@ def _safe_int(raw: str, default: int, label: str) -> int:
 def _validate_config(kwargs: dict) -> None:
     """Validate numeric config values.  Prints clear errors and exits on bad values."""
     errors: list[str] = []
+    if not (0 <= kwargs.get("ai_retry_count", 3) <= 10):
+        errors.append("AI_RETRY_COUNT must be between 0 and 10")
+    if not (1 <= kwargs.get("chat_context_count", 30) <= 100):
+        errors.append("CHAT_CONTEXT_COUNT must be between 1 and 100")
 
     # poll_interval_sec
     poll_interval_sec = kwargs.get("poll_interval_sec", 1.0)
@@ -421,8 +430,8 @@ def load_config() -> BotConfig:
     ai_backend = os.getenv("AI_BACKEND", "claude").strip().lower()
     fallback_backends = [name.strip().lower() for name in
                          os.getenv("AI_FALLBACK_ORDER", "").split(",") if name.strip()]
-    if any(name not in ("deepseek", "openai", "claude") for name in fallback_backends):
-        raise RuntimeError("AI_FALLBACK_ORDER 只支持 deepseek、openai、claude")
+    if any(name not in ("deepseek", "openai", "claude", "custom") for name in fallback_backends):
+        raise RuntimeError("AI_FALLBACK_ORDER 只支持 deepseek、openai、claude、custom")
 
     # Validate required API keys based on selected backend
     if ai_backend == "deepseek":
@@ -435,6 +444,12 @@ def load_config() -> BotConfig:
         if not api_key:
             msg = "OPENAI_API_KEY 未设置，请在 .env 文件中配置或通过引导页完成设置"
             raise RuntimeError(msg)
+    elif ai_backend == "custom":
+        if not all(os.getenv(key, "").strip() for key in
+                   ("CUSTOM_API_KEY", "CUSTOM_BASE_URL", "CUSTOM_MODEL")):
+            raise RuntimeError("自定义服务需要填写 CUSTOM_API_KEY、CUSTOM_BASE_URL 和 CUSTOM_MODEL")
+    elif ai_backend != "claude":
+        raise RuntimeError(f"不支持的 AI_BACKEND: {ai_backend}")
     else:
         api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         if not api_key:
@@ -473,6 +488,8 @@ def load_config() -> BotConfig:
     kwargs: dict = {
         "ai_backend": ai_backend,
         "fallback_backends": fallback_backends,
+        "ai_retry_count": _safe_int(os.getenv("AI_RETRY_COUNT", "3"), 3, "AI_RETRY_COUNT"),
+        "chat_context_count": _safe_int(os.getenv("CHAT_CONTEXT_COUNT", "30"), 30, "CHAT_CONTEXT_COUNT"),
         "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", "").strip(),
         "anthropic_base_url": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com").strip(),
         "summarize_model": os.getenv("SUMMARIZE_MODEL", "claude-haiku-4-5-20251001").strip(),
@@ -482,6 +499,9 @@ def load_config() -> BotConfig:
         "openai_base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip(),
         "openai_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip(),
         "openai_web_search": os.getenv("OPENAI_WEB_SEARCH", "false").strip().lower() == "true",
+        "custom_api_key": os.getenv("CUSTOM_API_KEY", "").strip(),
+        "custom_base_url": os.getenv("CUSTOM_BASE_URL", "").strip(),
+        "custom_model": os.getenv("CUSTOM_MODEL", "").strip(),
         # deepseek_model handled conditionally below (dataclass default)
         "wechat_backend": os.getenv("WECHAT_BACKEND", "wcdb").strip(),
         "wechat_groups": _decode_wechat_groups(os.getenv("WECHAT_GROUPS", "*")),

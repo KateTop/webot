@@ -32,6 +32,7 @@ function TypewriterText({ text, speed = 15 }) {
 function AiSection({ form, update }) {
   const isDeepSeek = form.ai_backend === 'deepseek'
   const isOpenAI = form.ai_backend === 'openai'
+  const isCustom = form.ai_backend === 'custom'
   const [prompts, setPrompts] = useState({ chat: '', summary: '' })
   const [promptStatus, setPromptStatus] = useState('')
 
@@ -59,11 +60,18 @@ function AiSection({ form, update }) {
           { value: 'deepseek', desc: 'DeepSeek', hint: '推荐 · 中文效果好' },
           { value: 'openai', desc: 'OpenAI 兼容', hint: 'OpenAI / GLM / Moonshot 等' },
           { value: 'claude', desc: 'Claude', hint: 'Anthropic' },
+          { value: 'custom', desc: '自定义模型', hint: '独立 OpenAI 兼容接口' },
         ]} />
       </Field>
 
-      <Field label="超时后轮换顺序" hint="逗号分隔，如 openai,claude；每个服务先请求 1 次、再重试 3 次，仍超时才切换下一个。备用服务需配置 API Key，重启后生效。">
+      <Field label="超时后轮换顺序" hint="逗号分隔，如 openai,custom,claude；达到下方重试次数后仍超时才切换。备用服务需配置 API Key，重启后生效。">
         <Input value={form.ai_fallback_order || ''} onChange={v => update('ai_fallback_order', v)} placeholder="openai,claude" />
+      </Field>
+      <Field label="每个服务失败重试次数" hint="0–10，首次请求之外的重试次数；仅超时才切换备用服务，次数越多等待越久。重启后生效。">
+        <Input type="number" value={form.ai_retry_count ?? 3} onChange={v => update('ai_retry_count', v)} placeholder="3" />
+      </Field>
+      <Field label="群聊问答参考消息数" hint="1–100，默认最近 30 条；只读取触发前本群消息。重启后生效。">
+        <Input type="number" value={form.chat_context_count ?? 30} onChange={v => update('chat_context_count', v)} placeholder="30" />
       </Field>
 
       {isDeepSeek ? (
@@ -74,11 +82,8 @@ function AiSection({ form, update }) {
           <Field label="API Base URL" hint="兼容 OpenAI 的转发地址；留默认值使用官方 API">
             <Input value={form.deepseek_base_url} onChange={v => update('deepseek_base_url', v)} placeholder="https://api.deepseek.com" />
           </Field>
-          <Field label="DeepSeek 模型选择">
-            <Select value={form.deepseek_model} onChange={v => update('deepseek_model', v)} options={[
-              { value: 'deepseek-v4-flash', desc: 'DeepSeek-V4-Flash', hint: '¥1 输入 · ¥2 输出 /M' },
-              { value: 'deepseek-v4-pro',   desc: 'DeepSeek-V4-Pro',   hint: '¥3 输入 · ¥6 输出 /M' },
-            ]} />
+          <Field label="DeepSeek 模型名" hint="填写当前接口提供的准确模型 ID">
+            <Input value={form.deepseek_model} onChange={v => update('deepseek_model', v)} placeholder="deepseek-chat" />
           </Field>
         </>
       ) : isOpenAI ? (
@@ -96,6 +101,18 @@ function AiSection({ form, update }) {
             <Toggle enabled={!!form.openai_web_search} onChange={v => update('openai_web_search', v)} />
           </Field>
         </>
+      ) : isCustom ? (
+        <>
+          <Field label="自定义 API Key" hint="本地接口若不校验 Key，可填写接口要求的占位值">
+            <Input type="password" value={form.custom_api_key || ''} onChange={v => update('custom_api_key', v)} placeholder="API Key" />
+          </Field>
+          <Field label="自定义 API 根地址" hint="OpenAI 兼容 Chat Completions；Sub2API 示例：http://127.0.0.1:8080/v1">
+            <Input value={form.custom_base_url || ''} onChange={v => update('custom_base_url', v)} placeholder="http://127.0.0.1:8080/v1" />
+          </Field>
+          <Field label="自定义模型名">
+            <Input value={form.custom_model || ''} onChange={v => update('custom_model', v)} placeholder="模型 ID" />
+          </Field>
+        </>
       ) : (
         <>
           <Field label="Anthropic API Key" hint="在 console.anthropic.com 获取" error={!form.anthropic_api_key ? '请填写 API Key' : null}>
@@ -104,17 +121,14 @@ function AiSection({ form, update }) {
           <Field label="API Base URL" hint="Anthropic API 地址；可填兼容代理或中转服务">
             <Input value={form.anthropic_base_url} onChange={v => update('anthropic_base_url', v)} placeholder="https://api.anthropic.com" />
           </Field>
-          <Field label="Claude 模型选择">
-            <Select value={form.summarize_model} onChange={v => update('summarize_model', v)} options={[
-              { value: 'claude-haiku-4-5-20251001', desc: 'Haiku 4.5', hint: '快速 · 低成本' },
-              { value: 'claude-sonnet-4-6', desc: 'Sonnet 4.6', hint: '高质量 · 推荐' },
-            ]} />
+          <Field label="Claude 模型名" hint="填写当前 Anthropic 接口提供的准确模型 ID">
+            <Input value={form.summarize_model} onChange={v => update('summarize_model', v)} placeholder="claude-haiku-4-5-20251001" />
           </Field>
         </>
       )}
       <div className="mt-7 border-t border-border-main pt-5">
         <h4 className="text-sm font-semibold mb-2">自定义 Prompt</h4>
-        <p className="text-xs mb-4">追加到内置指令；留空使用默认行为。修改后下次 AI 调用生效。</p>
+        <p className="text-xs mb-4">问答指令适用于艾特、引用和自动回复；总结指令适用于短篇与长篇群聊总结。追加到内置指令，修改后下次 AI 调用生效。</p>
         {['chat', 'summary'].map(key => (
           <Field key={key} label={key === 'chat' ? '群聊问答指令' : '群聊总结指令'}>
             <textarea className="w-full min-h-28 rounded-xl border border-border-main bg-bg-card p-3 text-sm text-text-main"
@@ -1727,6 +1741,10 @@ function SandboxSection({ form }) {
           openai_model: form.openai_model,
           openai_web_search: form.openai_web_search,
           openai_base_url: form.openai_base_url,
+          custom_api_key: form.custom_api_key,
+          custom_base_url: form.custom_base_url,
+          custom_model: form.custom_model,
+          ai_retry_count: form.ai_retry_count,
           anthropic_api_key: form.anthropic_api_key,
           anthropic_base_url: form.anthropic_base_url,
           summarize_model: form.summarize_model,
@@ -1859,8 +1877,10 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
   const [form, setForm] = useState({
     ai_backend: 'deepseek', deepseek_api_key: '', deepseek_model: 'deepseek-v4-flash',
     ai_fallback_order: '',
+    ai_retry_count: 3, chat_context_count: 30,
     deepseek_base_url: 'https://api.deepseek.com',
     openai_api_key: '', openai_base_url: 'https://api.openai.com/v1', openai_model: 'gpt-4o-mini', openai_web_search: false,
+    custom_api_key: '', custom_base_url: '', custom_model: '',
     anthropic_api_key: '', anthropic_base_url: 'https://api.anthropic.com',
     summarize_model: 'claude-haiku-4-5-20251001',
     bot_display_name: '', wechat_backend: 'wcdb', wechat_groups: '*',
@@ -1980,6 +2000,11 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
         body: JSON.stringify({
           ai_backend: form.ai_backend,
           ai_fallback_order: form.ai_fallback_order,
+          ai_retry_count: form.ai_retry_count,
+          chat_context_count: form.chat_context_count,
+          custom_api_key: form.custom_api_key,
+          custom_base_url: form.custom_base_url,
+          custom_model: form.custom_model,
           deepseek_api_key: form.deepseek_api_key,
           deepseek_base_url: form.deepseek_base_url,
           deepseek_model: form.deepseek_model,

@@ -250,7 +250,7 @@ class OpenAISummarizer(AbstractSummarizer):
                 model=self.model,
                 max_tokens=1024,
                 messages=[
-                    {"role": "system", "content": CHUNK_SYSTEM_PROMPT},
+                    {"role": "system", "content": with_user_instructions(CHUNK_SYSTEM_PROMPT, "summary")},
                     {"role": "user", "content": user_prompt},
                 ],
             )
@@ -325,7 +325,7 @@ class OpenAISummarizer(AbstractSummarizer):
                 model=self.model,
                 max_tokens=8192,
                 messages=[
-                    {"role": "system", "content": MERGE_SYSTEM_PROMPT},
+                    {"role": "system", "content": with_user_instructions(MERGE_SYSTEM_PROMPT, "summary")},
                     {"role": "user", "content": user_prompt},
                 ],
                 tools=[STORE_SUMMARY_TOOL],
