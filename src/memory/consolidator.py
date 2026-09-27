@@ -42,7 +42,8 @@ class MemoryConsolidator:
         self._timed_out: dict[str, concurrent.futures.Future] = {}
         self._retry_after: dict[str, float] = {}
 
-    def check_and_consolidate(self, chat_id: str, force: bool = False) -> bool:
+    def check_and_consolidate(self, chat_id: str, force: bool = False,
+                              through_row_id: int | None = None) -> bool:
         """Consolidate when due; return False on skips or failures."""
         with self._lock:
             if chat_id in self._active:
@@ -59,7 +60,7 @@ class MemoryConsolidator:
             self._active.add(chat_id)
 
         try:
-            return self._check_and_consolidate_impl(chat_id, force)
+            return self._check_and_consolidate_impl(chat_id, force, through_row_id)
         except Exception:
             self._defer_retry(chat_id)
             logger.exception("Memory consolidation error for chat %s", chat_id[:30])
@@ -72,11 +73,17 @@ class MemoryConsolidator:
         with self._lock:
             self._retry_after[chat_id] = time.monotonic() + CONSOLIDATE_FAILURE_COOLDOWN_SEC
 
-    def _check_and_consolidate_impl(self, chat_id: str, force: bool = False) -> bool:
+    def _check_and_consolidate_impl(self, chat_id: str, force: bool = False,
+                                    through_row_id: int | None = None) -> bool:
         memory = self._store.get_group_memory(chat_id)
         last_id = memory["last_message_id"] if memory else None
         last_consolidated = memory["last_consolidated"] if memory else None
-        new_count = self._store.get_new_message_count(chat_id, last_id)
+        if through_row_id is None:
+            new_count = self._store.get_new_message_count(chat_id, last_id)
+        else:
+            new_count = self._store.get_new_message_count(
+                chat_id, last_id, through_row_id=through_row_id,
+            )
 
         # An uninitialized group has no time origin. Wait for a batch.
         time_due = (last_consolidated is not None and
@@ -84,8 +91,11 @@ class MemoryConsolidator:
         if new_count == 0 or not (force or new_count >= CONSOLIDATE_MSG_THRESHOLD or time_due):
             return False
 
+        query_options = {"limit": MAX_NEW_MSGS_PER_CONSOLIDATION}
+        if through_row_id is not None:
+            query_options["through_row_id"] = through_row_id
         new_messages = self._store.get_messages_since_id(
-            chat_id, last_id, limit=MAX_NEW_MSGS_PER_CONSOLIDATION,
+            chat_id, last_id, **query_options,
         )
         if not new_messages:
             return False

@@ -363,30 +363,41 @@ class MessageStore:
         except sqlite3.InterfaceError:
             logger.debug("upsert_group_memory skipped: connection closed (shutting down)")
 
+    def get_latest_message_row_id(self, chat_id: str) -> int | None:
+        """Capture the last stored row for a startup history pass."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT MAX(id) FROM messages WHERE chat_id = ?", (chat_id,),
+            ).fetchone()
+            return row[0] if row else None
+
     def get_new_message_count(self, chat_id: str,
-                              since_message_id: str | None) -> int:
+                              since_message_id: str | None,
+                              through_row_id: int | None = None) -> int:
         """Count new messages in a chat since a given message ID."""
         with self._lock:
             if since_message_id is None:
                 row = self.conn.execute(
-                    "SELECT COUNT(*) as cnt FROM messages WHERE chat_id = ?",
-                    (chat_id,),
+                    "SELECT COUNT(*) as cnt FROM messages WHERE chat_id = ? "
+                    "AND (? IS NULL OR id <= ?)",
+                    (chat_id, through_row_id, through_row_id),
                 ).fetchone()
             else:
                 row = self.conn.execute(
                     """SELECT COUNT(*) as cnt FROM messages
-                       WHERE chat_id = ? AND id > (
+                       WHERE chat_id = ? AND (? IS NULL OR id <= ?) AND id > (
                            SELECT COALESCE(
                                (SELECT id FROM messages WHERE message_id = ?), 0
                            )
                        )""",
-                    (chat_id, since_message_id),
+                    (chat_id, through_row_id, through_row_id, since_message_id),
                 ).fetchone()
             return row["cnt"] if row else 0
 
     def get_messages_since_id(self, chat_id: str,
                               since_message_id: str | None,
-                              limit: int = 200) -> list[dict]:
+                              limit: int = 200,
+                              through_row_id: int | None = None) -> list[dict]:
         """Fetch messages since a given message ID."""
         with self._lock:
             if since_message_id is None:
@@ -394,23 +405,23 @@ class MessageStore:
                     """SELECT message_id, chat_id, sender_id, sender_name,
                               content, msg_type, timestamp
                        FROM messages
-                       WHERE chat_id = ?
+                       WHERE chat_id = ? AND (? IS NULL OR id <= ?)
                        ORDER BY id ASC
                        LIMIT ?""",
-                    (chat_id, limit),
+                    (chat_id, through_row_id, through_row_id, limit),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
                     """SELECT message_id, chat_id, sender_id, sender_name,
                               content, msg_type, timestamp
                        FROM messages
-                       WHERE chat_id = ? AND id > (
+                       WHERE chat_id = ? AND (? IS NULL OR id <= ?) AND id > (
                            SELECT COALESCE(
                                (SELECT id FROM messages WHERE message_id = ?), 0
                            )
                        )
                        ORDER BY id ASC
                        LIMIT ?""",
-                    (chat_id, since_message_id, limit),
+                    (chat_id, through_row_id, through_row_id, since_message_id, limit),
                 ).fetchall()
             return [dict(row) for row in rows]

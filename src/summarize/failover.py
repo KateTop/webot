@@ -1,8 +1,8 @@
-"""Ordered AI providers; only timeouts advance to the next provider."""
+"""Ordered AI providers; exhausted transient failures advance to the next."""
 
 import logging
 
-from .base import BackendTimeoutError
+from .base import BackendTransientError
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +22,14 @@ class FailoverSummarizer:
         for index, (name, provider) in enumerate(self.providers):
             try:
                 return getattr(provider, method)(*args, **kwargs)
-            except BackendTimeoutError:
+            except BackendTransientError as error:
                 if index == len(self.providers) - 1:
                     raise
-                logger.warning("AI provider %s timed out during %s; trying %s",
-                               name, method, self.providers[index + 1][0])
+                cause = error.__cause__
+                status = getattr(cause, "status_code", None)
+                detail = f"HTTP {status}" if status else type(cause).__name__
+                logger.warning("AI provider %s exhausted %s during %s; trying %s",
+                               name, detail, method, self.providers[index + 1][0])
 
     def chat(self, *args, **kwargs):
         return self._call("chat", *args, **kwargs)

@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class BackendTimeoutError(RuntimeError):
+class BackendTransientError(RuntimeError):
+    """A retryable provider failure exhausted its configured attempts."""
+
+
+class BackendTimeoutError(BackendTransientError):
     """The selected AI service exhausted its timeout budget."""
 
 
@@ -631,8 +635,8 @@ class AbstractSummarizer(ABC):
                 )
                 time.sleep(wait)
 
-        error_type = BackendTimeoutError if _is_timeout_error(last_error) else RuntimeError
+        error_type = BackendTimeoutError if _is_timeout_error(last_error) else BackendTransientError
         raise error_type(
-            f"Failed after {self.max_retries} retries on '{label}': "
+            f"Failed after {self.max_retries} attempts on '{label}': "
             f"{last_error}"
         ) from last_error

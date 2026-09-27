@@ -65,6 +65,9 @@ class WcdbBackend(AbstractWeChatBackend):
         # Thread safety: WCDB DLL (ctypes) may not be thread-safe internally.
         # All _client calls are serialized through this lock.
         self._client_lock = threading.Lock()
+        # Foreground windows and clipboard are process-global: only one
+        # callback may navigate/paste/send at a time.
+        self._send_lock = threading.Lock()
         # Callback thread pool — fire-and-forget AI calls so the poll loop
         # never blocks on a slow summarization.
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
@@ -557,7 +560,7 @@ class WcdbBackend(AbstractWeChatBackend):
                 success = self._send_and_confirm(group_name, talker, reply)
                 if success:
                     logger.info(
-                        "Reply sent: group='%s' (%d chars)",
+                        "Reply keyboard action completed: group='%s' (%d chars)",
                         group_name, len(reply),
                     )
                 else:
@@ -743,7 +746,8 @@ class WcdbBackend(AbstractWeChatBackend):
         on failure, and polling WCDB adds 3s of latency for marginal gain.
         """
         try:
-            success = self._window.send_to_chat(group_name, content)
+            with self._send_lock:
+                success = self._window.send_to_chat(group_name, content)
         except Exception:
             logger.exception("Send raised for group '%s'", group_name)
             success = False

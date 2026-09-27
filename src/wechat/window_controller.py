@@ -279,6 +279,25 @@ class WeChatWindowController:
         except Exception:
             return False
 
+    def _find_target_chat_window(self, group_name: str) -> Optional[int]:
+        """Find an already open detached chat by its exact group title."""
+        matches: list[int] = []
+
+        def _enum(hwnd, _ctx):
+            candidate = _score_window(hwnd)
+            width = candidate.rect[2] - candidate.rect[0]
+            height = candidate.rect[3] - candidate.rect[1]
+            if (candidate.process_name in WECHAT_PROCESS_NAMES
+                    and candidate.visible
+                    and candidate.title.strip() == group_name
+                    and width >= MIN_WINDOW_WIDTH
+                    and height >= MIN_WINDOW_HEIGHT):
+                matches.append(hwnd)
+            return True
+
+        win32gui.EnumWindows(_enum, None)
+        return matches[0] if matches else None
+
     def invalidate_cache(self) -> None:
         """Force next find_hwnd() to re-scan."""
         self._cached_hwnd = None
@@ -637,6 +656,13 @@ class WeChatWindowController:
         # Phase 3: Press Enter to select the first search result
         press_key(0x0D)  # Enter
         time.sleep(self.SELECT_RESULT_DELAY)
+        target_hwnd = self._find_target_chat_window(group_name)
+        if target_hwnd and target_hwnd != hwnd:
+            if not self.activate(target_hwnd):
+                logger.error("navigate_to_chat: target chat window could not be activated")
+                return False
+            logger.info("Navigation selected detached target chat HWND=%s", target_hwnd)
+            return target_hwnd
         hwnd = self._adopt_foreground_hwnd(hwnd, "after search Enter")
         if not self._validate_hwnd(hwnd):
             logger.error("navigate_to_chat: HWND became invalid after search Enter")
@@ -694,8 +720,8 @@ class WeChatWindowController:
     def send_message(self, hwnd: int, text: str) -> bool:
         """Send a text message via keyboard only: Ctrl+V → Enter.
 
-        The caller MUST have already navigated to the correct chat and
-        ensured input area focus (via Tab in navigate_to_chat).
+        The caller must have activated the exact target chat window.
+        The return value confirms keyboard actions, not WeChat delivery.
         """
         if not text:
             logger.warning("send_message: empty text")
@@ -717,10 +743,8 @@ class WeChatWindowController:
                     self.get_foreground_info(),
                 )
                 return False
-            # Re-validate HWND after activation (WeChat may have recreated it)
-            active = self._current_wechat_foreground_hwnd()
-            if active:
-                hwnd = self._adopt_foreground_hwnd(hwnd, "after send re-activation")
+            if not self._foreground_matches(hwnd):
+                return False
 
         logger.info("Sending message: %d chars to HWND=%s (keyboard-only)", len(text), hwnd)
 
@@ -740,14 +764,12 @@ class WeChatWindowController:
                     self.get_foreground_info(),
                 )
                 return False
-            active = self._current_wechat_foreground_hwnd()
-            if active:
-                hwnd = self._adopt_foreground_hwnd(hwnd, "after paste re-activation")
+            if not self._foreground_matches(hwnd):
+                return False
 
         send_combo(0x11, 0x56)  # Ctrl+V
         time.sleep(self.PASTE_SEND_DELAY)
 
-        hwnd = self._adopt_foreground_hwnd(hwnd, "after paste")
         if not self._foreground_matches(hwnd):
             logger.warning(
                 "send_message: foreground changed before Enter; "
@@ -760,15 +782,14 @@ class WeChatWindowController:
                     self.get_foreground_info(),
                 )
                 return False
-            active = self._current_wechat_foreground_hwnd()
-            if active:
-                hwnd = self._adopt_foreground_hwnd(hwnd, "after enter re-activation")
+            if not self._foreground_matches(hwnd):
+                return False
 
         # Press Enter to send
         press_key(0x0D)  # Enter
         time.sleep(self.ENTER_SEND_DELAY)
 
-        logger.info("Message send action completed: %d chars", len(text))
+        logger.info("Message keyboard action completed: %d chars", len(text))
         return True
 
     # ── Full send pipeline ────────────────────────────────────────
@@ -798,7 +819,8 @@ class WeChatWindowController:
                 self.invalidate_cache()
                 time.sleep(1.0)
 
-            hwnd = self.find_hwnd(force=(attempt > 0))
+            target_hwnd = self._find_target_chat_window(group_name)
+            hwnd = target_hwnd or self.find_hwnd(force=(attempt > 0))
             if not hwnd:
                 self._log_failure(group_name, text, "no WeChat window found")
                 continue
@@ -816,21 +838,26 @@ class WeChatWindowController:
                 )
                 continue
 
-            nav_result = self.navigate_to_chat(hwnd, group_name)
-            if not nav_result:
-                self._log_failure(group_name, text, "navigation failed", hwnd)
-                continue
-            if type(nav_result) is int:
-                hwnd = nav_result
+            if target_hwnd:
+                logger.info("Using existing detached target chat HWND=%s", target_hwnd)
             else:
-                hwnd = self._adopt_foreground_hwnd(hwnd, "after navigation")
+                nav_result = self.navigate_to_chat(hwnd, group_name)
+                if not nav_result:
+                    self._log_failure(group_name, text, "navigation failed", hwnd)
+                    continue
+                if type(nav_result) is int:
+                    hwnd = nav_result
+                else:
+                    hwnd = self._adopt_foreground_hwnd(hwnd, "after navigation")
 
             if not self.send_message(hwnd, text):
                 self._log_failure(group_name, text, "send failed", hwnd)
-                continue
+                # Paste may already have reached the input box. Repeating the
+                # whole send can append a duplicate draft or send twice.
+                return False
 
             logger.info(
-                f"send_to_chat SUCCESS: group='{group_name}' "
+                f"send_to_chat KEYBOARD_ACTION_COMPLETED: group='{group_name}' "
                 f"({len(text)} chars) HWND={hwnd}"
             )
             return True

@@ -98,7 +98,11 @@ class MessageRouter:
 
     def consolidate_backlog(self, chat_id: str) -> None:
         """Drain imported history into this group's persistent memory."""
-        while self._memory.check_and_consolidate(chat_id, force=True):
+        through_row_id = self._store.get_latest_message_row_id(chat_id)
+        if through_row_id is None:
+            return
+        while self._memory.check_and_consolidate(
+                chat_id, force=True, through_row_id=through_row_id):
             pass
 
     def handle(self, msg: dict) -> Optional[str]:

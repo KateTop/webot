@@ -11,6 +11,41 @@ from src.wechat.window_controller import WeChatWindowController, WindowCandidate
 
 
 class WeChatWindowControllerTests(unittest.TestCase):
+    def test_exact_group_title_identifies_detached_chat(self):
+        controller = WeChatWindowController()
+        candidates = {
+            100: WindowCandidate(hwnd=100, title="微信", process_name="weixin.exe",
+                                 rect=(0, 0, 1100, 700), visible=True),
+            200: WindowCandidate(hwnd=200, title="target group", process_name="weixin.exe",
+                                 rect=(0, 0, 600, 600), visible=True),
+        }
+
+        def enum_windows(callback, context):
+            for hwnd in candidates:
+                callback(hwnd, context)
+
+        with (
+            patch("src.wechat.window_controller.win32gui.EnumWindows", side_effect=enum_windows),
+            patch("src.wechat.window_controller._score_window", side_effect=lambda hwnd: candidates[hwnd]),
+        ):
+            self.assertEqual(controller._find_target_chat_window("target group"), 200)
+            self.assertIsNone(controller._find_target_chat_window("another group"))
+
+    def test_send_uses_existing_detached_chat_without_reopening_search(self):
+        controller = WeChatWindowController()
+        with (
+            patch.object(controller, "_find_target_chat_window", return_value=200),
+            patch.object(controller, "find_hwnd") as find_main,
+            patch.object(controller, "activate", return_value=True),
+            patch.object(controller, "_looks_like_blank_window", return_value=False),
+            patch.object(controller, "navigate_to_chat") as navigate,
+            patch.object(controller, "send_message", return_value=True) as send,
+        ):
+            self.assertTrue(controller.send_to_chat("target group", "hello", max_retries=1))
+            find_main.assert_not_called()
+            navigate.assert_not_called()
+            send.assert_called_once_with(200, "hello")
+
     def test_navigate_to_chat_uses_keyboard_only(self):
         """Navigation should use only keyboard (Ctrl+F, paste, Enter, Tab),
         no mouse clicks."""
@@ -167,6 +202,18 @@ class WeChatWindowControllerTests(unittest.TestCase):
             log_failure.assert_called_with(
                 "target group", "hello", "WeChat window is blank/white", 100
             )
+
+    def test_send_failure_after_navigation_does_not_repeat_possible_paste(self):
+        controller = WeChatWindowController()
+        with (
+            patch.object(controller, "_find_target_chat_window", return_value=200),
+            patch.object(controller, "activate", return_value=True),
+            patch.object(controller, "_looks_like_blank_window", return_value=False),
+            patch.object(controller, "send_message", return_value=False) as send,
+            patch.object(controller, "_log_failure"),
+        ):
+            self.assertFalse(controller.send_to_chat("target group", "hello", max_retries=3))
+            send.assert_called_once_with(200, "hello")
 
 
 
