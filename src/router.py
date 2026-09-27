@@ -515,17 +515,25 @@ class MessageRouter:
             )
 
         try:
-            ai_reply = self._summarizer.chat(
+            chat_kwargs = dict(
                 message=clean_content,
                 context_messages=context,
                 requester_name=display_name,
                 bot_name=self._config.bot_display_name,
                 group_name=msg.get("group_name", msg.get("chat_id", "群聊")),
-                group_memory=(self._get_group_memory(msg["chat_id"])
-                              if self._needs_long_term_memory(clean_content) else ""),
+                group_memory="",
                 quoted_content=msg.get("quoted_content", ""),
                 trigger_kind="引用" if msg.get("quotes_bot") else "艾特",
             )
+            ai_reply = self._summarizer.chat(**chat_kwargs)
+            if ai_reply and ai_reply.strip() == "[[NEED_GROUP_MEMORY]]":
+                memory = self._get_group_memory(msg["chat_id"])
+                if not memory:
+                    return f"@{display_name} 我现在没有本群更早的可靠记录，能补充一点背景吗？"
+                chat_kwargs["group_memory"] = memory
+                ai_reply = self._summarizer.chat(**chat_kwargs)
+                if ai_reply and ai_reply.strip() == "[[NEED_GROUP_MEMORY]]":
+                    return f"@{display_name} 现有记录还不足以回答，能补充一点背景吗？"
             ai_reply = self._nicks.resolve_wxids(ai_reply)
             # Guard against empty AI reply — sending a bare @mention is confusing
             if not ai_reply or not ai_reply.strip():
@@ -541,14 +549,6 @@ class MessageRouter:
                     and self._config.openai_web_search):
                 return f"@{display_name} 联网搜索失败，请检查 Sub2API 渠道和模型是否支持 web_search。"
             return f"@{display_name} 大脑短路了，稍等再试～"
-
-    @staticmethod
-    def _needs_long_term_memory(message: str) -> bool:
-        """Use persistent group memory for explicit historical/person questions."""
-        terms = ("以前", "之前", "历史", "长期", "一直", "过去", "上次", "曾经",
-                 "这个人", "那个人", "性格", "三观", "人物", "关系", "习惯", "经历",
-                 "记得", "还记得", "一贯", "经常", "趋势", "变化")
-        return any(term in message for term in terms)
 
     # ── Welcome handler ─────────────────────────────────────────
 

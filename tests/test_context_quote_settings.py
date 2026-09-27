@@ -91,6 +91,47 @@ def test_proactive_uses_configured_recent_count():
     assert seen['reply']['group_memory'] == ''
 
 
+def test_chat_loads_group_memory_only_after_model_requests_it():
+    seen = []
+    calls = []
+
+    def chat(**kwargs):
+        calls.append(kwargs)
+        return '[[NEED_GROUP_MEMORY]]' if len(calls) == 1 else '根据旧记录回答'
+
+    router = MessageRouter.__new__(MessageRouter)
+    router._store = SimpleNamespace(
+            get_recent_messages=lambda *args, **kwargs: [],
+            get_group_memory=lambda chat_id: seen.append(chat_id) or
+                {'memory_text': '分群旧记录'},
+        )
+    router._config = SimpleNamespace(chat_context_count=30, bot_display_name='Bot')
+    router._nicks = SimpleNamespace(resolve_name=lambda sender: sender,
+                                    resolve_wxids=lambda text: text)
+    router._summarizer = SimpleNamespace(chat=chat)
+    msg = {'chat_id': 'g', 'sender_id': 'u', 'sender_name': 'U',
+           'message_id': 'm', 'timestamp': 123}
+    assert MessageRouter._handle_chat(router, msg, '他以前怎样？') == '@U 根据旧记录回答'
+    assert seen == ['g']
+    assert [call['group_memory'] for call in calls] == ['', '分群旧记录']
+
+
+def test_chat_does_not_load_memory_for_normal_reply():
+    def forbidden(chat_id):
+        raise AssertionError('long-term memory should not be loaded')
+
+    router = MessageRouter.__new__(MessageRouter)
+    router._store = SimpleNamespace(get_recent_messages=lambda *args, **kwargs: [],
+                                    get_group_memory=forbidden)
+    router._config = SimpleNamespace(chat_context_count=30, bot_display_name='Bot')
+    router._nicks = SimpleNamespace(resolve_name=lambda sender: sender,
+                                    resolve_wxids=lambda text: text)
+    router._summarizer = SimpleNamespace(chat=lambda **kwargs: '直接回答')
+    msg = {'chat_id': 'g', 'sender_id': 'u', 'sender_name': 'U',
+           'message_id': 'm', 'timestamp': 123}
+    assert MessageRouter._handle_chat(router, msg, '你好') == '@U 直接回答'
+
+
 @pytest.mark.parametrize('field,value', [('ai_retry_count', -1),
                                           ('ai_retry_count', 11),
                                           ('chat_context_count', 0),
