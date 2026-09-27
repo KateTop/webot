@@ -1,5 +1,7 @@
 # webot
 
+[更新日志](CHANGELOG.md)
+
 > 微信群的 AI 助手 —— 帮你总结聊天、管理待办、回答问题，像多了一个会做笔记的群友。
 
 <p align="center">
