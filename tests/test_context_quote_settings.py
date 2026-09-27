@@ -12,6 +12,7 @@ from src.router import MessageRouter
 from src.summarize import create_summarizer
 from src.summarize.openai_backend import OpenAISummarizer
 from src.wechat.quote import parse_quote
+from src.wechat.wcdb_backend import WcdbBackend
 from src.web.server import _validate_ai_numeric_settings
 
 
@@ -38,6 +39,33 @@ def test_quote_requires_exact_own_wxid():
     assert parse_quote(xml, 'wxid_other')[0] is False
     assert parse_quote('<msg><appmsg><type>57</type>', 'wxid_bot')[0] is False
     assert parse_quote(xml.replace('<type>57</type>', '<type>5</type>'), 'wxid_bot')[0] is False
+
+
+def test_quote_of_another_person_extracts_only_new_mention_text():
+    xml = ('<msg><appmsg><type>57</type><title>@机器人 你怎么看？</title>'
+           '<refermsg><fromusr>wxid_other</fromusr>'
+           '<content>原文</content></refermsg></appmsg></msg>')
+    assert parse_quote(xml, 'wxid_bot') == (False, '@机器人 你怎么看？', '')
+
+    backend = WcdbBackend(bot_display_name='机器人', groups=['Group'])
+    backend._client = SimpleNamespace(
+        _config={'myWxid': 'wxid_bot'}, resolve_nickname=lambda wxid: wxid,
+    )
+    raw = {
+        'sender_username': 'wxid_sender', 'message_content': xml,
+        'localType': 49, 'create_time': 123, 'server_id': 'msg-1',
+    }
+    message = backend._standardize(raw, 'Group', 'g@chatroom')
+    assert message['content'] == '@机器人 你怎么看？'
+    assert message['is_at_mentioned'] is True
+    assert message['quotes_bot'] is False
+
+    # An @mention inside the quoted old text must not trigger a reply.
+    raw['message_content'] = xml.replace('@机器人 你怎么看？', '你怎么看？').replace(
+        '<content>原文</content>', '<content>@机器人 原文</content>')
+    message = backend._standardize(raw, 'Group', 'g@chatroom')
+    assert message['content'] == '你怎么看？'
+    assert message['is_at_mentioned'] is False
 
 
 def test_custom_provider_and_retry_count():

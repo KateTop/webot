@@ -617,7 +617,7 @@ class WcdbBackend(AbstractWeChatBackend):
             parse_quote(content, own_wxid) if local_type == 49
             else (False, content, "")
         )
-        if quotes_bot:
+        if local_type == 49:
             content = quote_text
 
         # ── Voice recognition ──────────────────────────────────────
@@ -700,6 +700,11 @@ class WcdbBackend(AbstractWeChatBackend):
             f"@{self._bot_name}" in resolved_content
             or f"@{self._bot_name}" in content
         )
+        if local_type == 49 and (quotes_bot or is_at):
+            logger.info(
+                "Quote trigger classified: quotes_bot=%s at_bot=%s own_id_available=%s",
+                bool(quotes_bot), bool(is_at), bool(own_wxid),
+            )
 
         # Generate stable message ID.
         # For system join messages, use a content-based ID to avoid
