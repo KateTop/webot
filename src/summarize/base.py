@@ -334,13 +334,12 @@ class AbstractSummarizer(ABC):
         # Build memory display
         memory_display = (
             group_memory if group_memory
-            else "（你刚进这个群，还没有形成对这个群的印象）"
+            else "（本次不使用长期记忆）"
         )
 
-        # Build recent messages string (use only what the mode requests)
-        limit = mode.context_count
+        # Router already applies the user-configured context count.
         recent_lines = []
-        for m in context_messages[-limit:]:
+        for m in context_messages:
             sender = m.get("sender_name", "?")
             content = m.get("content", "")
             if content:

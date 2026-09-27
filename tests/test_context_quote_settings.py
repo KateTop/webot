@@ -8,6 +8,7 @@ import pytest
 
 from src.config import BotConfig, _validate_config
 from src.db.store import MessageStore
+from src.router import MessageRouter
 from src.summarize import create_summarizer
 from src.summarize.openai_backend import OpenAISummarizer
 from src.wechat.quote import parse_quote
@@ -63,6 +64,31 @@ def test_chat_instruction_reaches_proactive_and_direct_reply():
     assert len(seen) == 2
     assert all('使用自定义语气' in prompt for prompt in seen)
     assert all('分点总结' not in prompt for prompt in seen)
+
+
+def test_proactive_uses_configured_recent_count():
+    seen = {}
+
+    def recent(chat_id, before_ts, limit):
+        seen['query'] = (chat_id, before_ts, limit)
+        return [{'sender_id': 'u', 'sender_name': 'U', 'content': '当前话题'}]
+
+    def reply(**kwargs):
+        seen['reply'] = kwargs
+        return '接话'
+
+    router = SimpleNamespace(
+        _store=SimpleNamespace(get_recent_messages=recent),
+        _config=SimpleNamespace(chat_context_count=23, bot_display_name='Bot'),
+        _nicks=SimpleNamespace(resolve_name=lambda sender: sender,
+                               resolve_wxids=lambda text: text),
+        _summarizer=SimpleNamespace(proactive_chat=reply),
+        _proactive=SimpleNamespace(record_speech=lambda chat_id: None),
+    )
+    mode = SimpleNamespace(name='CASUAL')
+    assert MessageRouter._handle_proactive_chat(router, {'chat_id': 'g', 'timestamp': 123}, mode) == '接话'
+    assert seen['query'] == ('g', 123, 23)
+    assert seen['reply']['group_memory'] == ''
 
 
 @pytest.mark.parametrize('field,value', [('ai_retry_count', -1),

@@ -599,10 +599,11 @@ class MessageRouter:
         """
         now = int(time.time())
 
-        # Fetch recent messages — limit to mode's context window
-        window_start = now - self._config.proactive_rate_window_sec
-        context = self._store.get_messages_since(
-            msg["chat_id"], window_start, limit=mode.context_count,
+        # The same user-configured recent-message window is used for all
+        # conversational replies. Include the current message for ambient chat.
+        count = max(1, min(getattr(self._config, "chat_context_count", 30), 100))
+        context = self._store.get_recent_messages(
+            msg["chat_id"], msg.get("timestamp", now), limit=count,
         )
 
         if not context:
@@ -626,7 +627,7 @@ class MessageRouter:
                 context_messages=context,
                 bot_name=self._config.bot_display_name,
                 group_name=msg.get("group_name", msg.get("chat_id", "群聊")),
-                group_memory=self._get_group_memory(msg["chat_id"]),
+                group_memory="",
             )
         except Exception as e:
             logger.error("Proactive chat API failed: %s", e)
