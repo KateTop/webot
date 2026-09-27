@@ -49,13 +49,13 @@ export default function SendFailures() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold">发送记录</h2>
-          <p className="text-sm text-text-muted mt-1">仅记录最终发送失败的内容。重发需要微信窗口可用；发送成功后状态会更新。</p>
+          <p className="text-sm text-text-muted mt-1">仅记录最终发送失败的内容。重发需要微信窗口可用；“动作已执行”表示窗口发送操作完成，尚未核对微信实际送达。</p>
         </div>
         <select value={status} onChange={e => { setStatus(e.target.value); setPage(1) }}
           className="bg-bg-card border border-border-main rounded-xl px-3 py-2 text-sm">
           <option value="failed">待重发</option>
           <option value="uncertain">状态未知</option>
-          <option value="sent">已重发</option>
+          <option value="sent">动作已执行</option>
           <option value="all">全部</option>
         </select>
       </div>
@@ -70,7 +70,7 @@ export default function SendFailures() {
             </div>
             <p className="text-sm whitespace-pre-wrap break-words max-h-48 overflow-auto">{item.content}</p>
             <div className="flex items-center justify-between mt-3">
-              <span className="text-xs text-text-muted">{item.status === 'sent' ? '已重发' : item.status === 'uncertain' ? '上次发送状态未知' : item.status === 'retrying' ? '正在重发' : '待重发'} · 重试 {item.attempts} 次</span>
+              <span className="text-xs text-text-muted">{item.status === 'sent' ? '发送动作已执行' : item.status === 'uncertain' ? '上次发送状态未知' : item.status === 'retrying' ? '正在重发' : '待重发'} · 重试 {item.attempts} 次</span>
               {(item.status === 'failed' || item.status === 'uncertain') && (
                 <button disabled={busyId !== null} onClick={() => retry(item.id)}
                   className="bg-brand-green text-black rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 cursor-pointer">
