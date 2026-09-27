@@ -96,6 +96,23 @@ class FailoverTest(unittest.TestCase):
         self.assertEqual((primary.calls, backup.calls), (4, 1))
         self.assertEqual(sleep.call_count, 3)
 
+    def test_proactive_transient_failure_reaches_backup(self):
+        primary = OpenAISummarizer.__new__(OpenAISummarizer)
+        primary.max_retries = 1
+        primary.retry_exceptions = (ServiceUnavailable,)
+        primary._call_chat_api = lambda *_args: (_ for _ in ()).throw(
+            ServiceUnavailable("synthetic 503"))
+        backup = FakeProvider(result="hello")
+        backup.proactive_chat = backup.chat
+        mode = type("Mode", (), {
+            "label": "casual", "description": "chat", "instruction": "brief",
+            "max_chars": 30,
+        })()
+        pool = FailoverSummarizer([("openai", primary), ("backup", backup)])
+        answer = pool.proactive_chat(mode, [{"sender_name": "user", "content": "hello"}])
+        self.assertEqual(answer, "hello")
+        self.assertEqual(backup.calls, 1)
+
     def test_timeout_uses_next_provider(self):
         primary = RetryingTimeoutProvider()
         backup = FakeProvider(result="ok")

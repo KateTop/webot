@@ -372,22 +372,18 @@ class AbstractSummarizer(ABC):
 
         user_prompt = "如果你想说话，现在就发一条。如果不想说话，回复空白。"
 
-        try:
-            reply = self._retry_with_backoff(
-                lambda: self._call_chat_api(
-                    system_prompt,
-                    [{"role": "user", "content": user_prompt}],
-                ),
-                "proactive chat",
-            )
-            text = reply.strip() if reply else ""
-            # Enforce max_chars
-            if len(text) > mode.max_chars:
-                text = text[:mode.max_chars]
-            return text
-        except RuntimeError as e:
-            logger.warning("Proactive chat API call failed: %s", e)
-            return ""
+        reply = self._retry_with_backoff(
+            lambda: self._call_chat_api(
+                system_prompt,
+                [{"role": "user", "content": user_prompt}],
+            ),
+            "proactive chat",
+        )
+        text = reply.strip() if reply else ""
+        # Enforce max_chars
+        if len(text) > mode.max_chars:
+            text = text[:mode.max_chars]
+        return text
 
     @abstractmethod
     def _call_chat_api(self, system_prompt: str,
