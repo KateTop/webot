@@ -101,19 +101,20 @@ export default function TodoManager() {
       try {
         const res = await fetch(`${API}/api/load-config`)
         const data = await res.json()
-        if (data.ok && data.config) {
-          const c = data.config
-          if (typeof c.todo_enabled === 'boolean') setTodoEnabled(c.todo_enabled)
-          if (c.todo_groups) setTodoGroups(Array.isArray(c.todo_groups) ? c.todo_groups : ['*'])
-          if (c.todo_max_per_group != null) setTodoMaxPerGroup(c.todo_max_per_group)
-          if (c.todo_completed_retention_days != null) setTodoCompletedRetention(c.todo_completed_retention_days)
-          if (c.todo_deleted_retention_days != null) setTodoDeletedRetention(c.todo_deleted_retention_days)
-          if (c.todo_add_keywords) setTodoAddKeywords(Array.isArray(c.todo_add_keywords) ? c.todo_add_keywords : String(c.todo_add_keywords).split(','))
-          if (c.todo_complete_keywords) setTodoCompleteKeywords(Array.isArray(c.todo_complete_keywords) ? c.todo_complete_keywords : String(c.todo_complete_keywords).split(','))
-          if (c.todo_delete_keywords) setTodoDeleteKeywords(Array.isArray(c.todo_delete_keywords) ? c.todo_delete_keywords : String(c.todo_delete_keywords).split(','))
-        }
-      } catch {}
-      setConfigLoaded(true)
+        if (!res.ok || !data.ok || !data.config) throw new Error('读取配置失败')
+        const c = data.config
+        if (typeof c.todo_enabled === 'boolean') setTodoEnabled(c.todo_enabled)
+        if (c.todo_groups) setTodoGroups(Array.isArray(c.todo_groups) ? c.todo_groups : ['*'])
+        if (c.todo_max_per_group != null) setTodoMaxPerGroup(c.todo_max_per_group)
+        if (c.todo_completed_retention_days != null) setTodoCompletedRetention(c.todo_completed_retention_days)
+        if (c.todo_deleted_retention_days != null) setTodoDeletedRetention(c.todo_deleted_retention_days)
+        if (c.todo_add_keywords) setTodoAddKeywords(Array.isArray(c.todo_add_keywords) ? c.todo_add_keywords : String(c.todo_add_keywords).split(','))
+        if (c.todo_complete_keywords) setTodoCompleteKeywords(Array.isArray(c.todo_complete_keywords) ? c.todo_complete_keywords : String(c.todo_complete_keywords).split(','))
+        if (c.todo_delete_keywords) setTodoDeleteKeywords(Array.isArray(c.todo_delete_keywords) ? c.todo_delete_keywords : String(c.todo_delete_keywords).split(','))
+        setConfigLoaded(true)
+      } catch {
+        setConfigSaveError('读取已有配置失败，请刷新页面后重试')
+      }
     }
     loadConfig()
   }, [])
@@ -132,6 +133,7 @@ export default function TodoManager() {
 
   // ── Save todo config ──────────────────────────────────────────
   async function handleSaveConfig() {
+    if (!configLoaded) return
     setConfigSaved(false)
     setConfigSaveError('')
     try {
@@ -385,7 +387,7 @@ export default function TodoManager() {
             )}
           </AnimatePresence>
           {!configSaved && !configSaveError && (
-            <motion.button whileTap={{ scale: 0.97 }} whileHover={{ scale: 1.02 }} onClick={handleSaveConfig}
+            <motion.button whileTap={{ scale: 0.97 }} whileHover={{ scale: 1.02 }} onClick={handleSaveConfig} disabled={!configLoaded}
               className="w-48 py-2.5 rounded-full text-[14px] font-semibold tracking-wide shadow-sm transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer bg-[#0d0d0d] dark:bg-white text-white dark:text-[#0d0d0d] border border-[#0d0d0d] dark:border-border-main hover:opacity-90">
               <FloppyDisk size={18} /> 保存配置
             </motion.button>

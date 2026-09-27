@@ -1945,24 +1945,26 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
       try {
         const res = await fetch('http://127.0.0.1:7327/api/load-config')
         const data = await res.json()
-        if (data.ok && data.config) {
-          setForm(prev => ({
-            ...prev,
-            ...data.config,
-            wechat_groups: data.config.wechat_groups || '*',
-          }))
-          if (data.detected_data_dir) {
-            setDetectedDataDir(data.detected_data_dir)
-          }
+        if (!res.ok || !data.ok || !data.config) throw new Error('读取配置失败')
+        setForm(prev => ({
+          ...prev,
+          ...data.config,
+          wechat_groups: data.config.wechat_groups || '*',
+        }))
+        if (data.detected_data_dir) {
+          setDetectedDataDir(data.detected_data_dir)
         }
-      } catch {}
-      setLoaded(true)
+        setLoaded(true)
+      } catch {
+        setSaveError('读取已有配置失败，请刷新页面后重试')
+      }
     }
     load()
   }, [])
 
   function update(key, value) { setForm(prev => ({ ...prev, [key]: value })); setSaved(false); setSaveError('') }
   async function handleSave() {
+    if (!loaded) return
     setSaved(false)
     setSaveError('')
     try {
@@ -2103,6 +2105,7 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
               whileTap={{ scale: 0.97 }}
               whileHover={{ scale: 1.02 }}
               onClick={handleSave}
+              disabled={!loaded}
               className={`w-48 py-2.5 rounded-full text-[14px] font-semibold tracking-wide shadow-sm transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer ${
                 saved
                   ? 'bg-brand-green-light border border-brand-green/20 text-brand-green-hover dark:text-brand-green font-semibold'

@@ -368,9 +368,12 @@ export default function FeaturesPanel({ activeSection, onNavigate }) {
       try {
         const res = await fetch('http://127.0.0.1:7327/api/load-config')
         const data = await res.json()
-        if (data.ok && data.config) setForm(prev => ({ ...prev, ...data.config }))
-      } catch {}
-      setLoaded(true)
+        if (!res.ok || !data.ok || !data.config) throw new Error('读取配置失败')
+        setForm(prev => ({ ...prev, ...data.config }))
+        setLoaded(true)
+      } catch {
+        setSaveError('读取已有配置失败，请刷新页面后重试')
+      }
     }
     load()
   }, [])
@@ -378,6 +381,7 @@ export default function FeaturesPanel({ activeSection, onNavigate }) {
   function update(key, value) { setForm(prev => ({ ...prev, [key]: value })); setSaved(false); setSaveError('') }
 
   async function handleSave() {
+    if (!loaded) return
     setSaved(false); setSaveError('')
     try {
       const res = await fetch('http://127.0.0.1:7327/api/config', {
@@ -456,7 +460,7 @@ export default function FeaturesPanel({ activeSection, onNavigate }) {
 
       {activeSection !== 'log' && activeSection !== 'fun' && (
         <div className="mt-8 flex items-center gap-4">
-          <motion.button whileTap={{ scale: 0.97 }} whileHover={{ scale: 1.02 }} onClick={handleSave}
+          <motion.button whileTap={{ scale: 0.97 }} whileHover={{ scale: 1.02 }} onClick={handleSave} disabled={!loaded}
             className={`w-48 py-2.5 rounded-full text-[14px] font-semibold tracking-wide shadow-sm transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer ${saved ? 'bg-brand-green-light border border-brand-green/20 text-brand-green-hover dark:text-brand-green font-semibold' : 'bg-[#0d0d0d] dark:bg-white text-white dark:text-[#0d0d0d] border border-[#0d0d0d] dark:border-border-main hover:opacity-90'}`}>
             {saved ? <><CheckCircle size={18} weight="fill" /> 已保存</> : <><FloppyDisk size={18} /> 保存配置</>}
           </motion.button>

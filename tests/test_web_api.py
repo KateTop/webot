@@ -1222,6 +1222,30 @@ class ApiConfigEndpointTests(unittest.TestCase):
                 result = json.loads(parts[1])
                 self.assertTrue(result["ok"])
 
+    def test_partial_config_save_keeps_other_sections(self):
+        """Saving the features page must not reset AI or group settings."""
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            env.write_text(
+                "AI_BACKEND=openai\nOPENAI_WEB_SEARCH=true\n"
+                "WECHAT_GROUPS=selected-group\nPROACTIVE_ENABLED=false\n",
+                encoding="utf-8",
+            )
+            with patch("src.web.server._find_or_create_env", return_value=env), \
+                    patch.dict(os.environ, {}, clear=False):
+                body = json.dumps({"proactive_enabled": True}).encode()
+                _, sock = _build_handler(
+                    "/api/config", method="POST", body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                result = json.loads(sock.get_response_text().split("\r\n\r\n", 1)[1])
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["saved"], ["PROACTIVE_ENABLED"])
+            self.assertEqual(env.read_text(encoding="utf-8").splitlines(), [
+                "AI_BACKEND=openai", "OPENAI_WEB_SEARCH=true",
+                "WECHAT_GROUPS=selected-group", "PROACTIVE_ENABLED=true",
+            ])
+
     def test_save_config_roundtrip(self):
         """POST /api/config saves, and load-config reads it back correctly."""
         tmp_dir = Path(tempfile.mkdtemp())

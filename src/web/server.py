@@ -224,9 +224,9 @@ def _todo_updates_from_config(config: dict) -> dict[str, str | None]:
         "TODO_MAX_PER_GROUP": str(config.get("todo_max_per_group", 50)),
         "TODO_COMPLETED_RETENTION_DAYS": str(config.get("todo_completed_retention_days", 30)),
         "TODO_DELETED_RETENTION_DAYS": str(config.get("todo_deleted_retention_days", 30)),
-        "TODO_ADD_KEYWORDS": ",".join(config.get("todo_add_keywords", [])) if config.get("todo_add_keywords") else None,
-        "TODO_COMPLETE_KEYWORDS": ",".join(config.get("todo_complete_keywords", [])) if config.get("todo_complete_keywords") else None,
-        "TODO_DELETE_KEYWORDS": ",".join(config.get("todo_delete_keywords", [])) if config.get("todo_delete_keywords") else None,
+        "TODO_ADD_KEYWORDS": ",".join(config.get("todo_add_keywords") or []),
+        "TODO_COMPLETE_KEYWORDS": ",".join(config.get("todo_complete_keywords") or []),
+        "TODO_DELETE_KEYWORDS": ",".join(config.get("todo_delete_keywords") or []),
     }
 
 
@@ -354,6 +354,12 @@ def _update_env(env_path: Path, updates: dict) -> list[str]:
         tmp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         os.replace(tmp, env_path)
         return list(safe)
+
+
+def _submitted_config_updates(config: dict, updates: dict) -> dict:
+    """A settings page may submit only its own fields; preserve all others."""
+    return {key: value for key, value in updates.items()
+            if key.lower() in config and value is not None}
 
 
 def _write_onboarding_to_env(env_path):
@@ -1271,7 +1277,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "STICKY_MENTION_TTL_SEC": str(config.get("sticky_mention_ttl_sec", 60)),
                     "SUMMARIZE_ENABLED": str(config.get("summarize_enabled", True)).lower(),
                     "FALLBACK_WINDOW_HOURS": str(config.get("fallback_window_hours", 8)),
-                    "TRIGGER_KEYWORDS": ",".join(config.get("trigger_keywords", [])) if config.get("trigger_keywords") else None,
+                    "TRIGGER_KEYWORDS": ",".join(config.get("trigger_keywords") or []),
                     "LOG_LEVEL": config.get("log_level"),
                     "WECHAT_DATA_DIR": config.get("wechat_data_dir"),
                     "VOICE_ASR_ENABLED": str(config.get("voice_asr_enabled", False)).lower(),
@@ -1283,6 +1289,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 }
                 updates.update(_feishu_updates_from_config(config))
                 updates.update(_todo_updates_from_config(config))
+                updates = _submitted_config_updates(config, updates)
                 # ── Safety: never overwrite real secrets with masked values.
                 #     load-config returns masked keys (e.g. "sk-r***t-k"); the
                 #     frontend sends them back unchanged.  Writing a masked

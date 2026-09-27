@@ -11,7 +11,7 @@ from src.db.store import MessageStore
 from src.router import MessageRouter
 from src.summarize.openai_backend import OpenAISummarizer
 from src.summarize import prompt_settings
-from src.web.server import _update_env
+from src.web.server import _submitted_config_updates, _todo_updates_from_config, _update_env
 
 
 def test_env_updates_preserve_secrets_and_concurrent_changes(tmp_path):
@@ -28,6 +28,37 @@ def test_env_updates_preserve_secrets_and_concurrent_changes(tmp_path):
     assert "OPENAI_API_KEY=real-test-value" in saved
     assert "CUSTOM_OPTION=keep" in saved
     assert all(f"OPTION_{i}={i}" in saved for i in range(20))
+
+
+def test_partial_settings_save_preserves_other_sections(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(
+        "AI_BACKEND=openai\nOPENAI_WEB_SEARCH=true\n"
+        "WECHAT_GROUPS=selected-group\nPROACTIVE_ENABLED=false\n",
+        encoding="utf-8",
+    )
+    payload = {"proactive_enabled": True}
+    candidate_updates = {
+        "AI_BACKEND": None,
+        "OPENAI_WEB_SEARCH": "false",
+        "WECHAT_GROUPS": "*",
+        "PROACTIVE_ENABLED": "true",
+    }
+    updates = _submitted_config_updates(payload, candidate_updates)
+    assert updates == {"PROACTIVE_ENABLED": "true"}
+    _update_env(env, updates)
+    assert env.read_text(encoding="utf-8").splitlines() == [
+        "AI_BACKEND=openai", "OPENAI_WEB_SEARCH=true",
+        "WECHAT_GROUPS=selected-group", "PROACTIVE_ENABLED=true",
+    ]
+
+
+def test_empty_todo_keywords_can_be_saved():
+    updates = _submitted_config_updates(
+        {"todo_add_keywords": []},
+        _todo_updates_from_config({"todo_add_keywords": []}),
+    )
+    assert updates == {"TODO_ADD_KEYWORDS": ""}
 
 
 def test_prompt_settings_persist_and_validate(tmp_path):
