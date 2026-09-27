@@ -16,7 +16,7 @@ from hashlib import sha1
 from base64 import b64encode
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse as _urlparse, parse_qs as _parse_qs
 
 # Re-exported from config.py for use in API handlers.
 # NOTE: _decode_wechat_groups is also imported inside _handle_request()
@@ -26,6 +26,23 @@ from urllib.parse import unquote
 from src.config import _decode_wechat_groups
 
 logger = logging.getLogger(__name__)
+
+
+def _message_db_path() -> str:
+    """Read only the configured database path; never expose env values."""
+    from src.config import find_env_file
+    env_path = find_env_file()
+    if env_path and env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("DB_PATH="):
+                return line.split("=", 1)[1].strip().strip('"\'') or "data/messages.db"
+    return "data/messages.db"
+
+
+def _failure_store():
+    from src.db import initialize_db, MessageStore
+    conn = initialize_db(_message_db_path())
+    return conn, MessageStore(conn)
 
 import sys as _sys
 if getattr(_sys, "frozen", False):
@@ -1047,7 +1064,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                          "/api/onboarding/step3", "/api/onboarding/step4",
                          "/api/sandbox/test",
                          "/api/lots",
-                         "/api/todos/action",
+                         "/api/todos/action", "/api/send-failures/retry",
                          "/api/voice/download-model",
                          "/api/wechat-data-dir/detect"):
             self.do_GET()
@@ -1061,6 +1078,75 @@ class _UIHandler(SimpleHTTPRequestHandler):
         self._handle_request()
 
     def _handle_request(self):
+        if self.path == "/api/send-failures/retry":
+            if self.command != "POST":
+                self.send_json({"ok": False, "error": "POST required"})
+                return
+            origin = self.headers.get("Origin", "")
+            if (self.client_address[0] not in ("127.0.0.1", "::1")
+                    or (origin and _urlparse(origin).hostname not in
+                        ("127.0.0.1", "localhost", "::1"))):
+                self.send_json({"ok": False, "error": "Local request required"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1000:
+                    raise ValueError("Invalid request size")
+                failure_id = int(json.loads(self.rfile.read(length))["id"])
+                if failure_id < 1:
+                    raise ValueError("Invalid id")
+                backend = _bot_control.backend
+                if not _bot_control.is_running() or not hasattr(backend, "retry_failed_send"):
+                    self.send_json({"ok": False, "error": "微信后端未运行或不支持重发"})
+                    return
+                conn, store = _failure_store()
+                try:
+                    item = store.claim_send_failure(failure_id)
+                finally:
+                    conn.close()
+                if item is None:
+                    self.send_json({"ok": False, "error": "记录不存在或正在重发"})
+                    return
+                try:
+                    success = backend.retry_failed_send(item["chat_id"], item["content"])
+                except Exception:
+                    logger.exception("Manual resend failed for item %d", failure_id)
+                    success = False
+                conn, store = _failure_store()
+                try:
+                    store.finish_send_failure(failure_id, success)
+                finally:
+                    conn.close()
+                self.send_json({"ok": success, "status": "sent" if success else "failed"})
+            except (ValueError, KeyError, json.JSONDecodeError) as exc:
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        if self.path == "/api/send-failures" or self.path.startswith("/api/send-failures?"):
+            if self.command != "GET":
+                self.send_json({"ok": False, "error": "GET required"})
+                return
+            origin = self.headers.get("Origin", "")
+            if (self.client_address[0] not in ("127.0.0.1", "::1")
+                    or (origin and _urlparse(origin).hostname not in
+                        ("127.0.0.1", "localhost", "::1"))):
+                self.send_json({"ok": False, "error": "Local request required"})
+                return
+            try:
+                query = _parse_qs(_urlparse(self.path).query)
+                page = int(query.get("page", ["1"])[0])
+                page_size = int(query.get("page_size", ["20"])[0])
+                status = query.get("status", ["failed"])[0]
+                conn, store = _failure_store()
+                try:
+                    result = store.list_send_failures(page, page_size, status)
+                finally:
+                    conn.close()
+                self.send_json({"ok": True, **result})
+            except (ValueError, OSError) as exc:
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
         if self.path == "/api/prompts":
             from src.summarize.prompt_settings import load_prompt_settings, save_prompt_settings
             try:
@@ -1135,6 +1221,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                         raw[k.strip()] = v.strip()
             config_data = {
                 "ai_backend": raw.get("AI_BACKEND", "deepseek"),
+                "ai_fallback_order": raw.get("AI_FALLBACK_ORDER", ""),
                 "deepseek_api_key": _mask_key(raw.get("DEEPSEEK_API_KEY", "")),
                 "deepseek_base_url": raw.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                 "deepseek_model": raw.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
@@ -1196,6 +1283,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                             raw[k.strip()] = v.strip()
                 export_data = {
                     "ai_backend": raw.get("AI_BACKEND", "deepseek"),
+                    "ai_fallback_order": raw.get("AI_FALLBACK_ORDER", ""),
                     "deepseek_api_key": _mask_key(raw.get("DEEPSEEK_API_KEY", "")),
                     "deepseek_base_url": raw.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                     "deepseek_model": raw.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
@@ -1262,6 +1350,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "ANTHROPIC_BASE_URL": config.get("anthropic_base_url"),
                     "SUMMARIZE_MODEL": config.get("summarize_model"),
                     "AI_BACKEND": config.get("ai_backend"),
+                    "AI_FALLBACK_ORDER": config.get("ai_fallback_order"),
                     "BOT_DISPLAY_NAME": config.get("bot_display_name"),
                     "WECHAT_BACKEND": config.get("wechat_backend"),
                     "WECHAT_GROUPS": config.get("wechat_groups") or "*",
@@ -1337,6 +1426,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "ANTHROPIC_BASE_URL": config.get("anthropic_base_url"),
                     "SUMMARIZE_MODEL": config.get("summarize_model"),
                     "AI_BACKEND": config.get("ai_backend"),
+                    "AI_FALLBACK_ORDER": config.get("ai_fallback_order"),
                     "BOT_DISPLAY_NAME": config.get("bot_display_name"),
                     "WECHAT_BACKEND": config.get("wechat_backend"),
                     "WECHAT_GROUPS": config.get("wechat_groups") or "*",

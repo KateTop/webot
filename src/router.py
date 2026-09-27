@@ -98,6 +98,11 @@ class MessageRouter:
         text = _MD_CODE.sub(r"\1", text)
         return text.strip()
 
+    def consolidate_backlog(self, chat_id: str) -> None:
+        """Drain imported history into this group's persistent memory."""
+        while self._memory.check_and_consolidate(chat_id, force=True):
+            pass
+
     def handle(self, msg: dict) -> Optional[str]:
         """Process an incoming group chat message.
 

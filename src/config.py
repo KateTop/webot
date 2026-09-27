@@ -142,6 +142,7 @@ class BotConfig:
     # === AI Backend ===
     # "claude" | "deepseek" | "openai"
     ai_backend: str = "claude"
+    fallback_backends: list[str] = field(default_factory=list)
 
     # === Claude (Anthropic) ===
     anthropic_api_key: str = ""
@@ -418,6 +419,10 @@ def load_config() -> BotConfig:
     Raises RuntimeError if required configuration is missing.
     """
     ai_backend = os.getenv("AI_BACKEND", "claude").strip().lower()
+    fallback_backends = [name.strip().lower() for name in
+                         os.getenv("AI_FALLBACK_ORDER", "").split(",") if name.strip()]
+    if any(name not in ("deepseek", "openai", "claude") for name in fallback_backends):
+        raise RuntimeError("AI_FALLBACK_ORDER 只支持 deepseek、openai、claude")
 
     # Validate required API keys based on selected backend
     if ai_backend == "deepseek":
@@ -467,6 +472,7 @@ def load_config() -> BotConfig:
 
     kwargs: dict = {
         "ai_backend": ai_backend,
+        "fallback_backends": fallback_backends,
         "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", "").strip(),
         "anthropic_base_url": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com").strip(),
         "summarize_model": os.getenv("SUMMARIZE_MODEL", "claude-haiku-4-5-20251001").strip(),

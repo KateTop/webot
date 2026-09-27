@@ -4,6 +4,7 @@ Uses the Anthropic Python SDK with native structured output (Pydantic parse).
 """
 
 import logging
+import time
 
 import anthropic
 
@@ -53,7 +54,8 @@ class ClaudeSummarizer(AbstractSummarizer):
                  base_url: str = "https://api.anthropic.com",
                  chunk_size: int = 400,
                  max_retries: int = 3):
-        self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+        self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url,
+                                          timeout=25.0, max_retries=0)
         self.model = model
         self.chunk_size = chunk_size
         self.max_retries = max_retries
@@ -152,7 +154,8 @@ class ClaudeSummarizer(AbstractSummarizer):
             sender = m.get("sender_name", "?")
             content = m.get("content", "")
             if content:
-                msg_lines.append(f"{sender}: {content}")
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.get("timestamp") or 0))
+                msg_lines.append(f"[{when}] {sender}: {content}")
 
         if not msg_lines:
             return existing_memory

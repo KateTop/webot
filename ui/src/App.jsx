@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Gear, ChartLine, Scroll, Users, Spinner, Sun, Moon, Sliders, CheckSquare } from '@phosphor-icons/react'
+import { Gear, ChartLine, Scroll, Users, Spinner, Sun, Moon, Sliders, CheckSquare, PaperPlaneTilt } from '@phosphor-icons/react'
 import Dashboard from './components/Dashboard'
 import ConfigPanel from './components/ConfigPanel'
 import FeaturesPanel from './components/FeaturesPanel'
 import NicknameEditor from './components/NicknameEditor'
 import LogViewer from './components/LogViewer'
 import TodoManager from './components/TodoManager'
+import SendFailures from './components/SendFailures'
 import Onboarding from './components/Onboarding'
 
 const iconVariants = {
@@ -39,6 +40,7 @@ const TABS = [
   },
   { id: 'nicknames', label: '群友昵称', icon: Users },
   { id: 'todo-manager', label: '群聊待办', icon: CheckSquare },
+  { id: 'send-failures', label: '发送记录', icon: PaperPlaneTilt },
   { id: 'logs', label: '运行日志', icon: Scroll },
 ]
 
@@ -291,6 +293,7 @@ export default function App() {
             {activeTab === 'features' && <FeaturesPanel activeSection={featuresSection} onNavigate={setFeaturesSection} />}
             {activeTab === 'nicknames' && <NicknameEditor />}
             {activeTab === 'todo-manager' && <TodoManager />}
+            {activeTab === 'send-failures' && <SendFailures />}
             {activeTab === 'logs' && <LogViewer />}
           </motion.div>
         </AnimatePresence>

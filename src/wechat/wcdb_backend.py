@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_SEC = 1.0
 MAX_DEDUP_SIZE = 5000
 MAX_CONSECUTIVE_ERRORS = 5   # trigger reinit after this many consecutive failures
+HISTORY_PAGE_SIZE = 200
 
 
 class WcdbBackend(AbstractWeChatBackend):
@@ -49,12 +50,14 @@ class WcdbBackend(AbstractWeChatBackend):
                  groups: list[str] | None = None,
                  poll_sec: float = DEFAULT_POLL_SEC,
                  store=None,
-                 config=None):
+                 config=None,
+                 on_history_ready=None):
         self._bot_name = bot_display_name
         self._groups = groups or []
         self._poll_sec = poll_sec
         self._store = store  # MessageStore fallback for name resolution
         self._running = False
+        self._stop_requested = False
         self._client: Optional[WcdbNativeClient] = None
         self._window = WeChatWindowController()
         self._talker_ids: dict[str, str] = {}
@@ -68,10 +71,13 @@ class WcdbBackend(AbstractWeChatBackend):
         # Voice recognition pipeline (lazy-init when voice_asr_enabled)
         self._voice: Optional[object] = None
         self._voice_config = config
+        self._on_history_ready = on_history_ready
+        self._history_pool: concurrent.futures.ThreadPoolExecutor | None = None
 
     # ── Public API ─────────────────────────────────────────────────
 
     def start(self, callback: MessageCallback) -> None:
+        self._stop_requested = False
         if not self._groups:
             logger.error("No groups configured. Set WECHAT_GROUPS in .env")
             return
@@ -111,6 +117,24 @@ class WcdbBackend(AbstractWeChatBackend):
 
         if not self._talker_ids:
             logger.error("No groups resolved. Check WECHAT_GROUPS.")
+            self._client.close()
+            self._client = None
+            return
+
+        # Import missed messages before the live poll starts. This path only
+        # writes to the store and never invokes the reply callback.
+        for group_name, talker in self._talker_ids.items():
+            if self._stop_requested:
+                self._client.close()
+                self._client = None
+                return
+            try:
+                self._backfill_group(group_name, talker)
+            except Exception:
+                logger.exception("History import failed for %s", talker)
+        if self._stop_requested:
+            self._client.close()
+            self._client = None
             return
 
         # Pre-find WeChat window
@@ -123,6 +147,12 @@ class WcdbBackend(AbstractWeChatBackend):
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="bot-cb-",
         )
+        if self._on_history_ready:
+            self._history_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="memory-history-",
+            )
+            for talker in self._talker_ids.values():
+                self._history_pool.submit(self._on_history_ready, talker)
         self._running = True
         consecutive_errors = 0
 
@@ -172,6 +202,9 @@ class WcdbBackend(AbstractWeChatBackend):
             # Drain in-flight callbacks gracefully
             self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
+            if self._history_pool:
+                self._history_pool.shutdown(wait=False, cancel_futures=True)
+                self._history_pool = None
             if self._client:
                 self._client.close()
         logger.info("WcdbBackend stopped.")
@@ -183,14 +216,60 @@ class WcdbBackend(AbstractWeChatBackend):
         group_name = self._talker_to_name(chat_id)
         if not group_name:
             logger.error("Cannot resolve chat_id=%s to group name", chat_id)
+            if self._store is not None:
+                self._store.record_send_failure(chat_id, chat_id, content)
             return False
 
         return self._send_and_confirm(group_name, chat_id, content)
 
     def stop(self) -> None:
+        self._stop_requested = True
         self._running = False
         if self._pool:
             self._pool.shutdown(wait=False)
+
+    def _backfill_group(self, group_name: str, talker: str) -> int:
+        if self._store is None or self._client is None:
+            return 0
+        since_ts = self._store.get_latest_message_timestamp(talker)
+        pages = []
+        offset = 0
+        reached_boundary = False
+        while not self._stop_requested:
+            with self._client_lock:
+                batch = self._client.get_messages(
+                    talker=talker, limit=HISTORY_PAGE_SIZE, offset=offset,
+                )
+            if not batch:
+                break
+            for raw in batch:
+                try:
+                    ts = int(raw.get("create_time", raw.get("createTime", 0)))
+                except (ValueError, TypeError):
+                    continue
+                if since_ts is not None and ts < since_ts:
+                    reached_boundary = True
+                    continue
+                pages.append(raw)
+            offset += len(batch)
+            if offset % 5000 == 0:
+                logger.info("History scan for %s: %d messages examined", talker, offset)
+            if reached_boundary or len(batch) < HISTORY_PAGE_SIZE:
+                break
+        imported = 0
+        # WCDB returns newest first. Insert oldest first so the memory cursor
+        # sees every row in the same order, including history added later.
+        for raw in reversed(pages):
+            standardized = self._standardize(raw, group_name, talker,
+                                             historical=True)
+            if (standardized is not None
+                    and (not self._bot_name
+                         or self._bot_name not in standardized["sender_name"])
+                    and self._store.insert_message(standardized)):
+                imported += 1
+        logger.info("History import for %s: %d new messages, %d scanned",
+                    talker, imported, offset)
+        return imported
 
     # ── Recovery ─────────────────────────────────────────────────────
 
@@ -523,7 +602,7 @@ class WcdbBackend(AbstractWeChatBackend):
     # ── Message standardization ──────────────────────────────────────
 
     def _standardize(self, msg: dict, group_name: str,
-                     talker: str) -> Optional[dict]:
+                     talker: str, historical: bool = False) -> Optional[dict]:
         """Convert WCDB raw message to standard format."""
         # WCDB message fields: sender_username, message_content, local_type, create_time
         sender = str(msg.get("sender_username", msg.get("senderUsername", msg.get("sender", ""))))
@@ -534,7 +613,7 @@ class WcdbBackend(AbstractWeChatBackend):
         # Voice messages (localType=34) have empty message_content;
         # we must recognise them BEFORE the empty-content check below.
         if local_type == 34:
-            voice_text = self._try_voice(msg)
+            voice_text = None if historical else self._try_voice(msg)
             if voice_text:
                 content = f"[语音] {voice_text}"
             else:
@@ -646,11 +725,29 @@ class WcdbBackend(AbstractWeChatBackend):
     # ── Message sending ──────────────────────────────────────────────
 
     def _send_and_confirm(self, group_name: str, talker: str,
-                          content: str) -> bool:
+                          content: str, record_failure: bool = True) -> bool:
         """Send via WeChatWindowController (fire-and-forget).
 
         Returns True if the keyboard send action completed successfully.
         No confirmation polling — the window controller already retries
         on failure, and polling WCDB adds 3s of latency for marginal gain.
         """
-        return self._window.send_to_chat(group_name, content)
+        try:
+            success = self._window.send_to_chat(group_name, content)
+        except Exception:
+            logger.exception("Send raised for group '%s'", group_name)
+            success = False
+        if not success and record_failure and self._store is not None:
+            try:
+                self._store.record_send_failure(talker, group_name, content)
+            except Exception:
+                logger.exception("Could not persist failed send for group '%s'", group_name)
+        return success
+
+    def retry_failed_send(self, chat_id: str, content: str) -> bool:
+        """Retry an already persisted item without creating another item."""
+        group_name = self._talker_to_name(chat_id)
+        if not group_name:
+            return False
+        return self._send_and_confirm(group_name, chat_id, content,
+                                      record_failure=False)

@@ -15,6 +15,21 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+class BackendTimeoutError(RuntimeError):
+    """The selected AI service exhausted its timeout budget."""
+
+
+def _is_timeout_error(error: Exception) -> bool:
+    current = error
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError) or "Timeout" in type(current).__name__:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class AbstractSummarizer(ABC):
     """Abstract summarizer with shared logic for chunking, retry, and formatting.
 
@@ -613,7 +628,8 @@ class AbstractSummarizer(ABC):
                 )
                 time.sleep(wait)
 
-        raise RuntimeError(
+        error_type = BackendTimeoutError if _is_timeout_error(last_error) else RuntimeError
+        raise error_type(
             f"Failed after {self.max_retries} retries on '{label}': "
             f"{last_error}"
-        )
+        ) from last_error

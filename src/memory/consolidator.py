@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 
 CONSOLIDATE_MSG_THRESHOLD = 50
 CONSOLIDATE_TIME_THRESHOLD_SEC = 3600
-MAX_NEW_MSGS_PER_CONSOLIDATION = 400
+MAX_NEW_MSGS_PER_CONSOLIDATION = 100
 CONSOLIDATE_FAILURE_COOLDOWN_SEC = 600
-CONSOLIDATE_CALL_TIMEOUT_SEC = 30
+CONSOLIDATE_CALL_TIMEOUT_SEC = 90
 
 
 class MemoryConsolidator:
@@ -30,7 +30,7 @@ class MemoryConsolidator:
         self._timed_out: dict[str, concurrent.futures.Future] = {}
         self._retry_after: dict[str, float] = {}
 
-    def check_and_consolidate(self, chat_id: str) -> bool:
+    def check_and_consolidate(self, chat_id: str, force: bool = False) -> bool:
         """Consolidate when due; return False on skips or failures."""
         with self._lock:
             if chat_id in self._active:
@@ -47,7 +47,7 @@ class MemoryConsolidator:
             self._active.add(chat_id)
 
         try:
-            return self._check_and_consolidate_impl(chat_id)
+            return self._check_and_consolidate_impl(chat_id, force)
         except Exception:
             self._defer_retry(chat_id)
             logger.exception("Memory consolidation error for chat %s", chat_id[:30])
@@ -60,7 +60,7 @@ class MemoryConsolidator:
         with self._lock:
             self._retry_after[chat_id] = time.monotonic() + CONSOLIDATE_FAILURE_COOLDOWN_SEC
 
-    def _check_and_consolidate_impl(self, chat_id: str) -> bool:
+    def _check_and_consolidate_impl(self, chat_id: str, force: bool = False) -> bool:
         memory = self._store.get_group_memory(chat_id)
         last_id = memory["last_message_id"] if memory else None
         last_consolidated = memory["last_consolidated"] if memory else None
@@ -69,7 +69,7 @@ class MemoryConsolidator:
         # An uninitialized group has no time origin. Wait for a batch.
         time_due = (last_consolidated is not None and
                     time.time() - last_consolidated >= CONSOLIDATE_TIME_THRESHOLD_SEC)
-        if new_count == 0 or not (new_count >= CONSOLIDATE_MSG_THRESHOLD or time_due):
+        if new_count == 0 or not (force or new_count >= CONSOLIDATE_MSG_THRESHOLD or time_due):
             return False
 
         new_messages = self._store.get_messages_since_id(
@@ -106,9 +106,9 @@ class MemoryConsolidator:
             # completion so another request for this group cannot stack.
             pool.shutdown(wait=False, cancel_futures=True)
 
-        if not updated or updated == existing_memory:
+        if not updated:
             self._defer_retry(chat_id)
-            logger.info("Memory consolidation returned unchanged text for %s", chat_id[:30])
+            logger.info("Memory consolidation returned empty text for %s", chat_id[:30])
             return False
 
         total_count = (memory["message_count"] if memory else 0) + len(new_messages)

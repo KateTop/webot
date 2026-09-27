@@ -26,6 +26,25 @@ def test_first_consolidation_waits_for_message_threshold():
     store.get_messages_since_id.assert_not_called()
 
 
+def test_history_import_can_force_small_batch():
+    consolidator, store, summarizer = _fixture(count=1)
+    assert consolidator.check_and_consolidate("group", force=True) is True
+    summarizer.consolidate_memory.assert_called_once()
+    store.upsert_group_memory.assert_called_once()
+
+
+def test_unchanged_memory_still_advances_cursor():
+    consolidator, store, summarizer = _fixture(count=1, result="same")
+    store.get_group_memory.return_value = {
+        "memory_text": "same", "message_count": 10,
+        "last_message_id": "old", "last_consolidated": 0,
+    }
+    assert consolidator.check_and_consolidate("group", force=True) is True
+    self_call = store.upsert_group_memory.call_args.kwargs
+    assert self_call["last_message_id"] == "0"
+    assert self_call["message_count"] == 11
+
+
 def test_failure_cools_down_only_its_group():
     consolidator, store, summarizer = _fixture(result="")
     assert consolidator.check_and_consolidate("group-a") is False

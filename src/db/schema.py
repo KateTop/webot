@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS group_memory (
 
 CREATE INDEX IF NOT EXISTS idx_trigger_chat_time
     ON trigger_log(chat_id, processed_at DESC);
+
+-- Final send failures. Content is stored locally so a human can retry it.
+CREATE TABLE IF NOT EXISTS send_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'failed',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_send_failures_status_time
+    ON send_failures(status, created_at DESC, id DESC);
 """
 
 

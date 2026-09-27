@@ -200,6 +200,9 @@ class Bot:
         # ── 2. Database ─────────────────────────────────────────
         self._conn = initialize_db(config.db_path)
         store = MessageStore(self._conn)
+        interrupted = store.mark_interrupted_sends()
+        if interrupted:
+            logger.warning("%d interrupted sends require manual review", interrupted)
 
         # Notify Web UI early: database is ready
         try:
@@ -249,7 +252,7 @@ class Bot:
             self._update_status = lambda **kw: None
 
         # ── 5. WeChat backend ───────────────────────────────────
-        backend = self._create_wechat_backend(store)
+        backend = self._create_wechat_backend(store, router)
         self._backend = backend
         self.backend = backend   # public ref for lifecycle control
 
@@ -338,7 +341,7 @@ class Bot:
         logger.info("DB path: %s", config.db_path)
         logger.info("=" * 50)
 
-    def _create_wechat_backend(self, store=None):
+    def _create_wechat_backend(self, store=None, router=None):
         """Create the appropriate WeChat backend based on config.
 
         Returns an AbstractWeChatBackend instance.
@@ -356,6 +359,7 @@ class Bot:
                 poll_sec=config.poll_interval_sec,
                 store=store,
                 config=config,
+                on_history_ready=(router.consolidate_backlog if router else None),
             )
 
         if config.wechat_backend == "mac_ui":

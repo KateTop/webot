@@ -22,6 +22,69 @@ class MessageStore:
         self._lock = threading.Lock()
         self._trigger_count = 0
 
+    def record_send_failure(self, chat_id: str, group_name: str, content: str) -> int:
+        """Keep one record for a final failed send, after internal UI retries."""
+        with self._lock, self.conn:
+            cursor = self.conn.execute(
+                "INSERT INTO send_failures (chat_id, group_name, content) VALUES (?, ?, ?)",
+                (chat_id, group_name, content),
+            )
+            return cursor.lastrowid
+
+    def list_send_failures(self, page: int = 1, page_size: int = 20,
+                           status: str = "failed") -> dict:
+        page = max(1, int(page))
+        page_size = min(100, max(1, int(page_size)))
+        if status not in ("failed", "sent", "retrying", "uncertain", "all"):
+            raise ValueError("Invalid send failure status")
+        where = "" if status == "all" else "WHERE status = ?"
+        args = () if status == "all" else (status,)
+        with self._lock:
+            total = self.conn.execute(
+                f"SELECT COUNT(*) FROM send_failures {where}", args,
+            ).fetchone()[0]
+            rows = self.conn.execute(
+                f"SELECT id, chat_id, group_name, content, status, attempts, "
+                f"created_at, updated_at FROM send_failures {where} "
+                "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (*args, page_size, (page - 1) * page_size),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows], "total": total,
+                "page": page, "page_size": page_size}
+
+    def claim_send_failure(self, failure_id: int) -> dict | None:
+        """Atomically claim an item so two clicks cannot send it twice."""
+        with self._lock, self.conn:
+            row = self.conn.execute(
+                "SELECT id, chat_id, group_name, content FROM send_failures "
+                "WHERE id = ? AND status IN ('failed', 'uncertain')",
+                (failure_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self.conn.execute(
+                "UPDATE send_failures SET status='retrying', attempts=attempts+1, "
+                "updated_at=unixepoch() WHERE id=?", (failure_id,),
+            )
+            return dict(row)
+
+    def finish_send_failure(self, failure_id: int, success: bool) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE send_failures SET status=?, updated_at=unixepoch() "
+                "WHERE id=? AND status='retrying'",
+                ("sent" if success else "failed", failure_id),
+            )
+
+    def mark_interrupted_sends(self) -> int:
+        """A crash during send has unknown delivery; require human review."""
+        with self._lock, self.conn:
+            cursor = self.conn.execute(
+                "UPDATE send_failures SET status='uncertain', updated_at=unixepoch() "
+                "WHERE status='retrying'",
+            )
+            return cursor.rowcount
+
     # ── Write operations ──────────────────────────────────────────
 
     def insert_message(self, msg: dict) -> bool:
@@ -54,8 +117,10 @@ class MessageStore:
                            (chat_id, sender_id, sender_name, last_timestamp)
                            VALUES (?, ?, ?, ?)
                            ON CONFLICT(chat_id, sender_id) DO UPDATE SET
-                           sender_name = excluded.sender_name,
-                           last_timestamp = excluded.last_timestamp""",
+                           sender_name = CASE WHEN excluded.last_timestamp >= user_last_message.last_timestamp
+                               THEN excluded.sender_name ELSE user_last_message.sender_name END,
+                           last_timestamp = MAX(user_last_message.last_timestamp,
+                                                excluded.last_timestamp)""",
                         (chat_id, sender_id, sender_name, timestamp),
                     )
                 return True
@@ -123,6 +188,13 @@ class MessageStore:
             self.conn.execute("VACUUM")
 
     # ── Query operations ───────────────────────────────────────────
+
+    def get_latest_message_timestamp(self, chat_id: str) -> int | None:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT MAX(timestamp) FROM messages WHERE chat_id=?", (chat_id,),
+            ).fetchone()
+            return row[0] if row and row[0] is not None else None
 
     def get_sender_display_name(self, sender_id: str) -> Optional[str]:
         """Return a previously seen display name for a wxid, or None."""
@@ -305,7 +377,7 @@ class MessageStore:
                               content, msg_type, timestamp
                        FROM messages
                        WHERE chat_id = ?
-                       ORDER BY timestamp ASC
+                       ORDER BY id ASC
                        LIMIT ?""",
                     (chat_id, limit),
                 ).fetchall()
@@ -319,7 +391,7 @@ class MessageStore:
                                (SELECT id FROM messages WHERE message_id = ?), 0
                            )
                        )
-                       ORDER BY timestamp ASC
+                       ORDER BY id ASC
                        LIMIT ?""",
                     (chat_id, since_message_id, limit),
                 ).fetchall()

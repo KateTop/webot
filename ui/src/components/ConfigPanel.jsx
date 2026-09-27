@@ -62,6 +62,10 @@ function AiSection({ form, update }) {
         ]} />
       </Field>
 
+      <Field label="超时后轮换顺序" hint="逗号分隔，如 openai,claude；首选服务始终排在最前。仅在请求超时时切换，备用服务需先配置 API Key，重启后生效。">
+        <Input value={form.ai_fallback_order || ''} onChange={v => update('ai_fallback_order', v)} placeholder="openai,claude" />
+      </Field>
+
       {isDeepSeek ? (
         <>
           <Field label="DeepSeek API Key" hint="在 platform.deepseek.com/api_keys 免费注册获取" error={!form.deepseek_api_key ? '请填写 API Key' : null}>
@@ -1715,6 +1719,7 @@ function SandboxSection({ form }) {
           group_name: groupName,
           group_memory: groupMemory,
           ai_backend: form.ai_backend,
+          ai_fallback_order: form.ai_fallback_order,
           deepseek_api_key: form.deepseek_api_key,
           deepseek_model: form.deepseek_model,
           deepseek_base_url: form.deepseek_base_url,
@@ -1853,6 +1858,7 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
   const [loaded, setLoaded] = useState(false)
   const [form, setForm] = useState({
     ai_backend: 'deepseek', deepseek_api_key: '', deepseek_model: 'deepseek-v4-flash',
+    ai_fallback_order: '',
     deepseek_base_url: 'https://api.deepseek.com',
     openai_api_key: '', openai_base_url: 'https://api.openai.com/v1', openai_model: 'gpt-4o-mini', openai_web_search: false,
     anthropic_api_key: '', anthropic_base_url: 'https://api.anthropic.com',
@@ -1973,6 +1979,7 @@ export default function ConfigPanel({ activeSection, onNavigate }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ai_backend: form.ai_backend,
+          ai_fallback_order: form.ai_fallback_order,
           deepseek_api_key: form.deepseek_api_key,
           deepseek_base_url: form.deepseek_base_url,
           deepseek_model: form.deepseek_model,
