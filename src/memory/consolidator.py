@@ -1,15 +1,8 @@
-"""MemoryConsolidator — triggers and orchestrates group memory updates.
-
-Core logic:
-- After every N new messages (default 30), or
-- After T hours since last consolidation (default 2h),
-  consolidate the new messages into the group's memory diary.
-
-Uses the DeepSeek Flash API for low-cost, low-latency consolidation.
-"""
+"""Trigger and coordinate per-group memory consolidation."""
 
 import concurrent.futures
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -19,132 +12,116 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Tuning constants ─────────────────────────────────────────────────
-
-# Trigger consolidation after this many NEW messages
 CONSOLIDATE_MSG_THRESHOLD = 50
-# Or after this many seconds since last consolidation (with new messages)
-CONSOLIDATE_TIME_THRESHOLD_SEC = 1 * 3600  # 1 hour
-# Maximum new messages to send per consolidation (limits prompt size)
+CONSOLIDATE_TIME_THRESHOLD_SEC = 3600
 MAX_NEW_MSGS_PER_CONSOLIDATION = 400
+CONSOLIDATE_FAILURE_COOLDOWN_SEC = 600
+CONSOLIDATE_CALL_TIMEOUT_SEC = 30
 
 
 class MemoryConsolidator:
-    """Checks consolidation triggers and orchestrates memory updates.
+    """Keep one consolidation request in flight per group."""
 
-    Usage:
-        consolidator = MemoryConsolidator(store, summarizer)
-
-        # In router.handle(), after persisting each message:
-        consolidator.check_and_consolidate(chat_id)
-    """
-
-    def __init__(self, store: "MessageStore",
-                 summarizer: "AbstractSummarizer"):
+    def __init__(self, store: "MessageStore", summarizer: "AbstractSummarizer"):
         self._store = store
         self._summarizer = summarizer
+        self._lock = threading.Lock()
+        self._active: set[str] = set()
+        self._timed_out: dict[str, concurrent.futures.Future] = {}
+        self._retry_after: dict[str, float] = {}
 
     def check_and_consolidate(self, chat_id: str) -> bool:
-        """Check if consolidation is needed and run it if so.
+        """Consolidate when due; return False on skips or failures."""
+        with self._lock:
+            if chat_id in self._active:
+                return False
+            pending = self._timed_out.get(chat_id)
+            if pending is not None:
+                if not pending.done():
+                    return False
+                # Discard the late result. The next attempt reads the same
+                # unprocessed messages from the store.
+                del self._timed_out[chat_id]
+            if time.monotonic() < self._retry_after.get(chat_id, 0):
+                return False
+            self._active.add(chat_id)
 
-        Returns True if consolidation was performed, False if skipped.
-        Never raises — all errors are caught and logged internally.
-        """
         try:
             return self._check_and_consolidate_impl(chat_id)
-        except Exception as e:
-            logger.error(
-                "Memory consolidation error for chat %s: %s",
-                chat_id[:30], e,
-            )
+        except Exception:
+            self._defer_retry(chat_id)
+            logger.exception("Memory consolidation error for chat %s", chat_id[:30])
             return False
+        finally:
+            with self._lock:
+                self._active.remove(chat_id)
 
-    # ── Internal ───────────────────────────────────────────────────
+    def _defer_retry(self, chat_id: str) -> None:
+        with self._lock:
+            self._retry_after[chat_id] = time.monotonic() + CONSOLIDATE_FAILURE_COOLDOWN_SEC
 
     def _check_and_consolidate_impl(self, chat_id: str) -> bool:
-        """Internal: check triggers and run consolidation."""
         memory = self._store.get_group_memory(chat_id)
         last_id = memory["last_message_id"] if memory else None
         last_consolidated = memory["last_consolidated"] if memory else None
-
-        # Count new messages since last consolidation
         new_count = self._store.get_new_message_count(chat_id, last_id)
 
-        # Trigger check
-        # 首次合并使用 Unix epoch 作为虚拟基点，使时间阈值自然生效
-        effective_last = last_consolidated if last_consolidated is not None else 0
-        time_ok = (time.time() - effective_last) >= CONSOLIDATE_TIME_THRESHOLD_SEC
-        msg_ok = new_count >= CONSOLIDATE_MSG_THRESHOLD
+        # An uninitialized group has no time origin. Wait for a batch.
+        time_due = (last_consolidated is not None and
+                    time.time() - last_consolidated >= CONSOLIDATE_TIME_THRESHOLD_SEC)
+        if new_count == 0 or not (new_count >= CONSOLIDATE_MSG_THRESHOLD or time_due):
+            return False
 
-        if not time_ok and not msg_ok:
-            return False  # nothing to do
-
-        if new_count == 0:
-            return False  # no new messages to incorporate
-
-        # Fetch new messages
         new_messages = self._store.get_messages_since_id(
             chat_id, last_id, limit=MAX_NEW_MSGS_PER_CONSOLIDATION,
         )
         if not new_messages:
             return False
-
         existing_memory = memory["memory_text"] if memory else ""
-
         logger.info(
             "Consolidating memory for %s (%d new msgs, existing memory=%d chars)...",
             chat_id[:30], len(new_messages), len(existing_memory),
         )
 
-        # Call AI consolidation with a 30s timeout so a hung API
-        # doesn't block the message-processing loop indefinitely.
-        # Use manual executor management — with-statement shutdown(wait=True)
-        # would block on a hung thread even after the timeout fires.
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(
+            self._summarizer.consolidate_memory,
+            existing_memory=existing_memory,
+            new_messages=new_messages,
+        )
         try:
-            future = pool.submit(
-                self._summarizer.consolidate_memory,
-                existing_memory=existing_memory,
-                new_messages=new_messages,
-            )
-            updated = future.result(timeout=30)
-        except RuntimeError:
-            pool.shutdown(wait=False)
-            return False
+            updated = future.result(timeout=CONSOLIDATE_CALL_TIMEOUT_SEC)
         except concurrent.futures.TimeoutError:
-            logger.warning(
-                "Memory consolidation timed out after 30s for %s — skipping this cycle",
-                chat_id[:30],
-            )
-            pool.shutdown(wait=False)
+            with self._lock:
+                self._timed_out[chat_id] = future
+            self._defer_retry(chat_id)
+            logger.warning("Memory consolidation timed out for %s", chat_id[:30])
+            return False
+        except Exception:
+            self._defer_retry(chat_id)
+            logger.exception("Memory consolidation request failed for %s", chat_id[:30])
             return False
         finally:
-            # Only shutdown if we haven't already (success path)
-            if "updated" not in dir() or updated is not None:
-                pass  # will shutdown below
-        # On success, shut down cleanly
-        pool.shutdown(wait=True)
+            # Python cannot stop a running request. Retain its future until
+            # completion so another request for this group cannot stack.
+            pool.shutdown(wait=False, cancel_futures=True)
 
         if not updated or updated == existing_memory:
-            logger.info(
-                "Memory consolidation returned unchanged text for %s — skipping write",
-                chat_id[:30],
-            )
+            self._defer_retry(chat_id)
+            logger.info("Memory consolidation returned unchanged text for %s", chat_id[:30])
             return False
 
-        # Persist
         total_count = (memory["message_count"] if memory else 0) + len(new_messages)
-        last_msg_id = new_messages[-1]["message_id"]
-
         self._store.upsert_group_memory(
             chat_id=chat_id,
             memory_text=updated,
             message_count=total_count,
-            last_message_id=last_msg_id,
+            last_message_id=new_messages[-1]["message_id"],
         )
-
+        with self._lock:
+            self._retry_after.pop(chat_id, None)
         logger.info(
-            "Memory consolidated for %s: %d msgs → %d chars (total %d msgs processed)",
+            "Memory consolidated for %s: %d msgs -> %d chars (total %d msgs processed)",
             chat_id[:30], len(new_messages), len(updated), total_count,
         )
         return True

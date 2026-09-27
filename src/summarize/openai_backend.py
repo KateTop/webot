@@ -308,7 +308,7 @@ class OpenAISummarizer(AbstractSummarizer):
             return self._retry_with_backoff(call, "memory consolidation")
         except RuntimeError as e:
             logger.warning("Memory consolidation failed: %s", e)
-            return existing_memory  # don't lose existing memory on failure
+            raise
 
     # ── Map-Reduce ────────────────────────────────────────────────
 

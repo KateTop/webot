@@ -602,6 +602,9 @@ class AbstractSummarizer(ABC):
                 self.last_api_call_time = time.time()
                 return result
             except self.retry_exceptions as e:
+                last_error = e
+                if attempt == self.max_retries:
+                    break
                 wait = 2 ** attempt
                 logger.warning(
                     "Transient error on '%s' (attempt %d/%d). "
@@ -609,7 +612,6 @@ class AbstractSummarizer(ABC):
                     label, attempt, self.max_retries, wait, e,
                 )
                 time.sleep(wait)
-                last_error = e
 
         raise RuntimeError(
             f"Failed after {self.max_retries} retries on '{label}': "

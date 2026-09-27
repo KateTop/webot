@@ -468,6 +468,8 @@ todo_delete_keywords: list[str] = [
 | `__init__(store, summarizer)` | 初始化记忆合并器 | `store: MessageStore, summarizer: AbstractSummarizer` | `None` |
 | `check_and_consolidate(chat_id)` | 检查并执行合并 | `chat_id: str` | `bool` |
 
+首次整理必须累计 50 条新消息；已有记忆在满 50 条或距上次整理满 1 小时且有新消息时触发。同群只允许一个整理请求进行，失败或返回未变化时冷却 10 分钟。请求等待超过 30 秒后不会写入迟到结果；原请求实际结束前，同群不会再发起整理。API 重试在最后一次失败后立即报错，不再额外等待。
+
 ### 2.19 `src/db/store.py` (MessageStore)
 
 | 函数 | 描述 | 参数 | 返回值 |

@@ -141,7 +141,7 @@ class ClaudeSummarizer(AbstractSummarizer):
             new_messages: List of new message dicts to incorporate.
 
         Returns:
-            Updated memory text, or existing_memory unchanged on failure.
+            Updated memory text. API failures propagate to the consolidator.
         """
         if not new_messages:
             return existing_memory
@@ -191,4 +191,4 @@ class ClaudeSummarizer(AbstractSummarizer):
             return self._retry_with_backoff(call, "memory consolidation")
         except RuntimeError as e:
             logger.warning("Memory consolidation failed: %s", e)
-            return existing_memory  # don't lose existing memory on failure
+            raise
