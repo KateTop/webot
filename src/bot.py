@@ -332,10 +332,13 @@ class Bot:
         logger.info("webot starting...")
         logger.info("WeChat backend: %s", config.wechat_backend)
         logger.info("AI backend: %s", config.ai_backend)
-        if config.ai_backend == "deepseek":
-            logger.info("Model: %s", config.deepseek_model)
-        else:
-            logger.info("Model: %s", config.summarize_model)
+        model = {
+            "deepseek": config.deepseek_model,
+            "claude": config.summarize_model,
+            "openai": config.openai_model,
+            "custom": config.custom_model,
+        }.get(config.ai_backend, "")
+        logger.info("Model: %s", model)
         logger.info("Bot name: %r", config.bot_display_name)
         if config.wechat_groups:
             logger.info("Groups: %s", config.wechat_groups)
