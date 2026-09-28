@@ -146,16 +146,20 @@ def build_modes(config: "BotConfig") -> list[ProactiveMode]:
 
 # Module-level cache — built once on first access
 _MODES: list[ProactiveMode] | None = None
+_MODES_KEY: tuple[float, ...] | None = None
 _MODES_LOCK = threading.Lock()
 
 
 def get_modes(config: "BotConfig") -> list[ProactiveMode]:
     """Return the mode list, building from config on first call."""
-    global _MODES
-    if _MODES is None:
+    global _MODES, _MODES_KEY
+    key = tuple(getattr(config, f"proactive_rate_{name}")
+                for name in ("quiet", "casual", "lively", "burst"))
+    if _MODES is None or _MODES_KEY != key:
         with _MODES_LOCK:
-            if _MODES is None:
+            if _MODES is None or _MODES_KEY != key:
                 _MODES = build_modes(config)
+                _MODES_KEY = key
     return _MODES
 
 
@@ -164,8 +168,9 @@ def reset_modes() -> None:
 
     Call this after config changes to force re-evaluation of rate thresholds.
     """
-    global _MODES
+    global _MODES, _MODES_KEY
     _MODES = None
+    _MODES_KEY = None
 
 
 def lookup_mode(rate: float, config: "BotConfig") -> ProactiveMode:

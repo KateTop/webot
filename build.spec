@@ -65,6 +65,7 @@ a = Analysis(
         'src.proactive', 'src.proactive.gate', 'src.proactive.modes',
         'src.proactive.rate_tracker', 'src.proactive.sticky',
         'src.memory', 'src.memory.consolidator',
+        'src.conversation_policy', 'src.conversation_episodes',
         'src.wechat', 'src.wechat.base', 'src.wechat.wcdb_backend',
         'src.wechat.wcdb_client', 'src.wechat.mac_hybrid_backend',
         'src.wechat.mac_ui_backend', 'src.wechat.window_controller',

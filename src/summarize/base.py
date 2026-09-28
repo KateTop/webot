@@ -309,7 +309,8 @@ class AbstractSummarizer(ABC):
     def proactive_chat(self, mode, context_messages: list[dict],
                        bot_name: str = "群聊小助手",
                        group_name: str = "群聊",
-                       group_memory: str = "") -> str:
+                       group_memory: str = "",
+                       episode_phase: str = "") -> str:
         """Generate a spontaneous chat reply based on conversation context.
 
         The AI is explicitly told it may return blank when it judges the
@@ -367,6 +368,17 @@ class AbstractSummarizer(ABC):
             recent_messages=recent_messages,
             group_memory=memory_display,
         )
+        if episode_phase:
+            phase_labels = {"rising": "升温", "peak": "持续讨论", "falling": "降温"}
+            system_prompt += (
+                "\n\n当前话题阶段：" + phase_labels.get(episode_phase, episode_phase)
+                + "。只回应本段对话正在讨论的内容，不从更早的话题硬接。"
+            )
+        if not group_memory:
+            system_prompt += (
+                "\n若仅靠本段对话不能判断而确需本群长期背景，"
+                "只输出 [[NEED_GROUP_MEMORY]]；否则不要索取长期记忆。"
+            )
         from .prompt_settings import with_user_instructions
         system_prompt = with_user_instructions(system_prompt, "chat")
 

@@ -12,8 +12,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CONSOLIDATE_MSG_THRESHOLD = 50
-CONSOLIDATE_TIME_THRESHOLD_SEC = 3600
 MAX_NEW_MSGS_PER_CONSOLIDATION = 100
 CONSOLIDATE_FAILURE_COOLDOWN_SEC = 600
 CONSOLIDATE_CALL_TIMEOUT_SEC = 390
@@ -100,9 +98,23 @@ class MemoryConsolidator:
 
     def _check_and_consolidate_impl(self, chat_id: str, force: bool = False,
                                     through_row_id: int | None = None) -> bool:
+        from src.conversation_policy import load_policy
+
         memory = self._store.get_group_memory(chat_id)
         last_id = memory["last_message_id"] if memory else None
-        last_consolidated = memory["last_consolidated"] if memory else None
+        if through_row_id is None and not force:
+            policy = load_policy()
+            pending = self._store.list_pending_memory_segments(chat_id, limit=200)
+            selected = 0
+            for segment in pending["segments"]:
+                if not segment["closed"]:
+                    break
+                selected += segment["count"]
+                through_row_id = segment["end_id"]
+                if selected >= policy["memory_min_messages"]:
+                    break
+            if selected < policy["memory_min_messages"]:
+                return False
         if through_row_id is None:
             new_count = self._store.get_new_message_count(chat_id, last_id)
         else:
@@ -110,10 +122,7 @@ class MemoryConsolidator:
                 chat_id, last_id, through_row_id=through_row_id,
             )
 
-        # An uninitialized group has no time origin. Wait for a batch.
-        time_due = (last_consolidated is not None and
-                    time.time() - last_consolidated >= CONSOLIDATE_TIME_THRESHOLD_SEC)
-        if new_count == 0 or not (force or new_count >= CONSOLIDATE_MSG_THRESHOLD or time_due):
+        if new_count == 0:
             return False
 
         query_options = {"limit": MAX_NEW_MSGS_PER_CONSOLIDATION}

@@ -425,10 +425,33 @@ class MessageStore:
                     (chat_id, memory_text, now, now),
                 )
 
+    def ensure_group_memory_file(self, chat_id: str) -> Path:
+        """Create an editable soul.md without resetting an existing cursor."""
+        if not chat_id:
+            raise ValueError("群 ID 不能为空")
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT memory_text FROM group_memory WHERE chat_id=?", (chat_id,),
+            ).fetchone()
+            path = self._soul_path(chat_id)
+            if path is None:
+                raise RuntimeError("需要文件数据库才能创建 soul.md")
+            if not path.exists():
+                self._write_soul(chat_id, row[0] if row else "")
+            if row is None:
+                now = time.time()
+                with self.conn:
+                    self.conn.execute(
+                        "INSERT INTO group_memory (chat_id, created_at, updated_at) "
+                        "VALUES (?, ?, ?)", (chat_id, now, now),
+                    )
+            return path
+
     def list_pending_memory_segments(self, chat_id: str,
-                                     limit: int = 5000,
-                                     gap_seconds: int = 900) -> dict:
-        """Group unprocessed messages into chronological ranges without content."""
+                                     limit: int = 5000) -> dict:
+        """Group unprocessed messages into settled conversation episodes."""
+        from src.conversation_policy import load_policy
+        from src.conversation_episodes import split_episodes
         if not chat_id:
             raise ValueError("群 ID 不能为空")
         limit = min(max(int(limit), 1), 5000)
@@ -440,25 +463,14 @@ class MessageStore:
             ).fetchone()
             cursor_id = (row[0] or 0) if row else 0
             rows = self.conn.execute(
-                """SELECT id, timestamp FROM messages
+                """SELECT id, message_id, sender_id, content, timestamp FROM messages
                    WHERE chat_id=? AND id>? ORDER BY id ASC LIMIT ?""",
                 (chat_id, cursor_id, limit + 1),
             ).fetchall()
         has_more = len(rows) > limit
-        rows = rows[:limit]
-        segments = []
-        for row in rows:
-            if (not segments or row["timestamp"] - segments[-1]["end_time"] > gap_seconds
-                    or segments[-1]["count"] >= 100):
-                segments.append({
-                    "start_id": row["id"], "end_id": row["id"],
-                    "start_time": row["timestamp"], "end_time": row["timestamp"],
-                    "count": 1,
-                })
-            else:
-                segments[-1]["end_id"] = row["id"]
-                segments[-1]["end_time"] = row["timestamp"]
-                segments[-1]["count"] += 1
+        episodes = split_episodes([dict(row) for row in rows[:limit]], load_policy())
+        segments = [{key: value for key, value in part.items() if key != "rows"}
+                    for part in episodes]
         return {"segments": segments, "has_more": has_more,
                 "shown_count": len(rows), "cursor_id": cursor_id}
 
@@ -487,6 +499,13 @@ class MessageStore:
                 "SELECT MAX(id) FROM messages WHERE chat_id = ?", (chat_id,),
             ).fetchone()
             return row[0] if row else None
+
+    def list_group_ids(self) -> list[str]:
+        """List stored groups without loading their message bodies."""
+        with self._lock:
+            return [row[0] for row in self.conn.execute(
+                "SELECT DISTINCT chat_id FROM messages ORDER BY chat_id",
+            ).fetchall()]
 
     def get_new_message_count(self, chat_id: str,
                               since_message_id: str | None,

@@ -106,6 +106,13 @@ class HealthMonitor:
         )
 
         self._write_status_json()
+        # A settled conversation can have no next message to trigger the
+        # normal callback path. Check those groups on the 5-minute heartbeat.
+        if self._running:
+            try:
+                self._router.consolidate_settled_memories()
+            except Exception:
+                logger.exception("Settled memory scan failed")
 
     def _check_db(self) -> str:
         """Check database connection is alive."""

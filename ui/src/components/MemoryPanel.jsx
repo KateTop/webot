@@ -21,8 +21,10 @@ export default function MemoryPanel() {
   const [soul, setSoul] = useState('')
   const [savedSoul, setSavedSoul] = useState('')
   const [soulPath, setSoulPath] = useState('')
+  const [soulExists, setSoulExists] = useState(false)
   const [pending, setPending] = useState({ segments: [], has_more: false })
   const [prompt, setPrompt] = useState('')
+  const [policy, setPolicy] = useState(null)
   const [preview, setPreview] = useState(null)
   const [working, setWorking] = useState(false)
   const [jobId, setJobId] = useState('')
@@ -36,6 +38,8 @@ export default function MemoryPanel() {
     }).catch(e => setError(e.message))
     request('/prompts').then(data => setPrompt(data.prompts?.memory || ''))
       .catch(e => setError(e.message))
+    request('/conversation-policy').then(data => setPolicy(data.policy))
+      .catch(e => setError(e.message))
   }, [])
 
   async function refreshGroup(id = chatId) {
@@ -45,6 +49,7 @@ export default function MemoryPanel() {
     setSoul(data.memory?.memory_text || '')
     setSavedSoul(data.memory?.memory_text || '')
     setSoulPath(data.soul_path || '')
+    setSoulExists(Boolean(data.soul_exists))
     setPending(data.pending || { segments: [] })
     setPreview(null)
   }
@@ -78,10 +83,19 @@ export default function MemoryPanel() {
         const text = soul
         await request('/memory/save', { chat_id: chatId, text })
         setSavedSoul(text)
+        setSoulExists(true)
         setMessage('soul.md 已保存；下一次问答或整理即可读取')
       } else if (action === 'prompt') {
         await request('/prompts', { memory: prompt })
         setMessage('记忆整理指令已保存；下一次整理立即生效')
+      } else if (action === 'create') {
+        await request('/memory/create', { chat_id: chatId })
+        await refreshGroup()
+        setMessage('已创建该群的 soul.md，可直接编辑并保存')
+      } else if (action === 'policy') {
+        const data = await request('/conversation-policy', policy)
+        setPolicy(data.policy)
+        setMessage('对话与记忆策略已保存；下一段对话起生效')
       }
     } catch (e) { setError(e.message) }
     finally { setWorking(false) }
@@ -128,7 +142,7 @@ export default function MemoryPanel() {
     <div className="flex flex-wrap gap-2">
       {[
         ['soul', '群聊 soul.md'], ['pending', '待整理对话'],
-        ['prompt', '记忆整理指令'], ['nicknames', '群友昵称'],
+        ['prompt', '记忆整理指令'], ['policy', '对话策略'], ['nicknames', '群友昵称'],
       ].map(([key, label]) => <button key={key} onClick={() => setSection(key)}
         className={`px-4 py-2 rounded-full text-sm ${section === key ? 'bg-brand-green-light text-brand-green font-semibold' : 'bg-bg-raised text-text-muted'}`}>{label}</button>)}
     </div>
@@ -139,8 +153,9 @@ export default function MemoryPanel() {
       <div>
         <h3 className="font-semibold">当前群聊记忆</h3>
         <p className={muted}>已整理 {memory?.message_count || 0} 条；上次整理 {stamp(memory?.last_consolidated)}。手动编辑不会改变已整理游标。</p>
-        {soulPath && <p className="text-xs text-text-muted mt-1 break-all">文件：{soulPath}</p>}
+        {soulPath && <p className="text-xs text-text-muted mt-1 break-all">文件：{soulPath}（{soulExists ? '已创建' : '尚未创建'}）</p>}
       </div>
+      {!soulExists && <button className={button} disabled={!chatId || working} onClick={() => act('create')}>创建空的 soul.md</button>}
       <textarea aria-label="群聊 soul.md" value={soul} onChange={e => setSoul(e.target.value)} rows={18}
         className="w-full bg-bg-raised border border-border-main rounded-xl p-4 text-sm text-text-main focus:outline-none focus:border-brand-green" placeholder="还没有记忆。可以先写下这个群的已知背景，也可以从待整理对话开始生成。" />
       <button className={button} disabled={!chatId || working || soul === savedSoul} onClick={() => act('soul')}>保存 soul.md</button>
@@ -148,12 +163,13 @@ export default function MemoryPanel() {
 
     {section === 'pending' && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-4">
       <div><h3 className="font-semibold">聊天库中尚未整理的对话</h3>
-        <p className={muted}>相隔超过 15 分钟或达到 100 条会分成下一段。为保护游标，只能先整理最早一段。</p></div>
+        <p className={muted}>按间隔、条数和连续消息确认的话题变化分段；参数可在“对话策略”调整。为保护游标，只能先整理最早一段。</p></div>
       {(pending.segments || []).length === 0 && <p className={muted}>当前没有待整理消息。</p>}
       {(pending.segments || []).map((segment, index) => <div key={segment.end_id} className="border border-border-main rounded-xl p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div><p className="text-sm font-medium">{stamp(segment.start_time)} → {stamp(segment.end_time)}</p>
-            <p className="text-xs text-text-muted">{segment.count} 条消息 · 第 {index + 1} 段</p></div>
+            <p className="text-xs text-text-muted">{segment.count} 条 · {segment.closed ? '已结束' : '进行中'} · 边界：{segment.end_reason} · {segment.participants} 人</p>
+            {segment.preview && <p className="text-xs text-text-muted mt-1">起始消息：{segment.preview}</p>}</div>
           <div className="flex gap-2">
             <button className="px-3 py-2 rounded-lg border border-border-main text-sm" onClick={() => showSegment(segment)}>查看对话</button>
             <button className={button} disabled={index !== 0 || working} onClick={() => consolidate(segment)}>整理到记忆</button>
@@ -172,6 +188,36 @@ export default function MemoryPanel() {
       <textarea aria-label="记忆整理指令" value={prompt} onChange={e => setPrompt(e.target.value)} rows={12}
         className="w-full bg-bg-raised border border-border-main rounded-xl p-4 text-sm text-text-main focus:outline-none focus:border-brand-green" placeholder="例如：重要事件保留时间与依据；不要把玩笑写成稳定的人物判断。" />
       <button className={button} disabled={working} onClick={() => act('prompt')}>保存整理指令</button>
+    </div>}
+
+    {section === 'policy' && policy && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-5">
+      <div><h3 className="font-semibold">对话与记忆策略</h3>
+        <p className={muted}>本地规则判断话题范围、热度和沉淀时机；只有进入整理或候选发言时才调用 AI。参数保存到 data/conversation_policy.json。</p></div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {[
+          ['episode_gap_sec', '话题间隔（秒）', 60, 3600],
+          ['episode_max_messages', '单段最多消息', 20, 100],
+          ['topic_min_messages', '话题变化前最少消息', 3, 50],
+          ['topic_similarity', '话题相似度阈值（0–0.8）', 0, 0.8],
+          ['memory_settle_sec', '沉寂后整理（秒）', 60, 3600],
+          ['memory_min_messages', '自动整理最少消息', 2, 100],
+          ['proactive_min_messages', '主动发言最少消息', 2, 100],
+          ['proactive_min_participants', '主动发言最少人数', 1, 20],
+          ['proactive_min_age_sec', '话题最短持续（秒）', 0, 600],
+          ['proactive_min_new_messages', '两次发言间新增消息', 1, 100],
+          ['proactive_cooldown_sec', '主动发言冷却（秒）', 30, 7200],
+          ['proactive_max_replies', '单段最多主动发言', 0, 10],
+        ].map(([key, label, min, max]) => <label key={key} className="text-sm space-y-1">
+          <span>{label}</span><input type="number" min={min} max={max} step={key === 'topic_similarity' ? 0.01 : 1}
+            value={policy[key]} onChange={e => setPolicy(prev => ({ ...prev, [key]: Number(e.target.value) }))}
+            className="w-full bg-bg-raised border border-border-main rounded-lg px-3 py-2" /></label>)}
+      </div>
+      <label className="text-sm block space-y-1"><span>允许主动发言的阶段</span>
+        <select value={policy.proactive_phases} onChange={e => setPolicy(prev => ({ ...prev, proactive_phases: e.target.value }))}
+          className="w-full bg-bg-raised border border-border-main rounded-lg px-3 py-2">
+          <option value="rising_peak">升温和持续讨论（推荐）</option><option value="all_active">包括降温阶段</option>
+        </select></label>
+      <button className={button} disabled={working} onClick={() => act('policy')}>保存对话策略</button>
     </div>}
 
     {section === 'nicknames' && chatId && <NicknameEditor groupFromParent={chatId} hideGroupSelector />}

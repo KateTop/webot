@@ -757,6 +757,10 @@ class MemoryEndpointTests(unittest.TestCase):
                  patch("src.web.server._memory_runtime", None):
                 state = call("/api/memory?chat_id=test%40chatroom")
                 self.assertTrue(state["ok"])
+                self.assertFalse(state["soul_exists"])
+                created = call("/api/memory/create", {"chat_id": "test@chatroom"})
+                self.assertTrue(created["ok"])
+                self.assertTrue(call("/api/memory?chat_id=test%40chatroom")["soul_exists"])
                 segment = state["pending"]["segments"][0]
                 preview = call(f"/api/memory/segment?chat_id=test%40chatroom&"
                                f"start_id={segment['start_id']}&end_id={segment['end_id']}")
@@ -777,6 +781,20 @@ class MemoryEndpointTests(unittest.TestCase):
                     self.assertFalse(blocked["ok"])
                 self.assertEqual(call("/api/memory?chat_id=test%40chatroom")
                                  ["memory"]["memory_text"], "test soul")
+
+    def test_conversation_policy_roundtrip(self):
+        from src import conversation_policy
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(conversation_policy, "POLICY_FILE", Path(directory) / "policy.json"):
+            _, sock = _build_handler("/api/conversation-policy")
+            initial = json.loads(sock.get_response_text().split("\r\n\r\n", 1)[1])
+            self.assertEqual(initial["policy"]["episode_gap_sec"], 900)
+            body = json.dumps({"episode_gap_sec": 300}).encode()
+            _, sock = _build_handler("/api/conversation-policy", method="POST", body=body,
+                                     headers={"Content-Type": "application/json"})
+            saved = json.loads(sock.get_response_text().split("\r\n\r\n", 1)[1])
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["policy"]["episode_gap_sec"], 300)
 
 
 # ---------------------------------------------------------------------------

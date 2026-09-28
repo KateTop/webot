@@ -14,6 +14,9 @@ def _fixture(count=50, result="updated"):
     store.get_group_memory.return_value = None
     store.get_new_message_count.return_value = count
     store.get_messages_since_id.return_value = messages
+    store.list_pending_memory_segments.return_value = {"segments": [
+        {"closed": True, "count": count, "end_id": count},
+    ]}
     summarizer = Mock()
     summarizer.consolidate_memory.return_value = result
     return module.MemoryConsolidator(store, summarizer), store, summarizer
@@ -31,6 +34,17 @@ def test_history_import_can_force_small_batch():
     assert consolidator.check_and_consolidate("group", force=True) is True
     summarizer.consolidate_memory.assert_called_once()
     store.upsert_group_memory.assert_called_once()
+
+
+def test_small_closed_episode_does_not_block_following_full_episode():
+    consolidator, store, summarizer = _fixture(count=100)
+    store.list_pending_memory_segments.return_value = {"segments": [
+        {"closed": True, "count": 2, "end_id": 2},
+        {"closed": True, "count": 100, "end_id": 102},
+    ]}
+    assert consolidator.check_and_consolidate("group") is True
+    summarizer.consolidate_memory.assert_called_once()
+    assert store.get_messages_since_id.call_args.kwargs["through_row_id"] == 102
 
 
 def test_unchanged_memory_still_advances_cursor():

@@ -7,6 +7,7 @@ for the 99% of messages that get filtered out before reaching the AI.
 
 import logging
 import random
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -35,16 +36,23 @@ class ProactiveGate:
     per-mode interval + probability provides natural pacing.
     """
 
-    def __init__(self, config: "BotConfig"):
+    def __init__(self, config: "BotConfig", store=None):
         self._config = config
+        self._store = store
+        self._lock = threading.RLock()
         self._tracker = RateTracker(config.proactive_rate_window_sec)
         # Per-group: last time we evaluated (to enforce eval_interval)
         self._last_eval: dict[str, float] = {}
         # Per-group: consecutive AI silence count (for exponential backoff)
         self._consecutive_silence: dict[str, int] = {}
         self._call_count: int = 0
+        self._episodes: dict[str, dict] = {}
 
     def should_speak(self, msg: dict) -> tuple[bool, ProactiveMode | None, str]:
+        with self._lock:
+            return self._should_speak_unlocked(msg)
+
+    def _should_speak_unlocked(self, msg: dict) -> tuple[bool, ProactiveMode | None, str]:
         """Record a message and decide whether to trigger AI evaluation.
 
         Args:
@@ -60,19 +68,25 @@ class ProactiveGate:
 
         # ── Periodic _last_eval cleanup ─────────────────────────────
         self._call_count += 1
-        if self._call_count % 500 == 0 and len(self._last_eval) > 100:
+        if self._call_count % 500 == 0:
             cutoff = time.time() - 3600  # 1 hour
             stale = [k for k, v in self._last_eval.items() if v < cutoff]
             for k in stale:
                 del self._last_eval[k]
                 self._consecutive_silence.pop(k, None)
+            for k, state in list(self._episodes.items()):
+                if state.get("last_seen", 0) < cutoff and not state.get("pending"):
+                    del self._episodes[k]
 
         # ── Gate 1: master switch ─────────────────────────────────
         if not self._config.proactive_enabled:
             return False, None, "disabled"
 
-        # ── Record for rate tracking (only when proactive is on) ──
         self._tracker.record(chat_id)
+        if self._store is not None:
+            allowed, reason = self._episode_gate(msg)
+            if not allowed:
+                return False, None, reason
 
         # ── Gate 2: message rate ──────────────────────────────────
         rate = self._tracker.rate(chat_id)
@@ -121,6 +135,8 @@ class ProactiveGate:
 
         # ── All gates passed ──────────────────────────────────────
         self._last_eval[chat_id] = now
+        if self._store is not None:
+            self._episodes[chat_id]["pending"] = True
         logger.info(
             "Proactive: GATE PASSED mode=%s rate=%.1f/min "
             "interval=%ds prob=%.0f%% (chat=%s)",
@@ -128,6 +144,62 @@ class ProactiveGate:
             mode.reply_probability * 100, chat_id[:20],
         )
         return True, mode, f"mode={mode.name} rate={rate:.1f}/min"
+
+    def _episode_gate(self, msg: dict) -> tuple[bool, str]:
+        from src.conversation_episodes import split_episodes
+        from src.conversation_policy import load_policy
+
+        policy = load_policy()
+        chat_id = msg["chat_id"]
+        now = time.time()
+        if now - msg.get("timestamp", 0) > 120:
+            return False, "stale message"
+        rows = self._store.get_recent_messages(
+            chat_id, msg.get("timestamp", int(now)), limit=500,
+        )
+        episodes = split_episodes(rows, policy, now=now)
+        if not episodes:
+            return False, "no conversation"
+        episode = episodes[-1]
+        key = episode["start_id"]
+        state = self._episodes.get(chat_id)
+        if state is None or state["key"] != key:
+            state = {"key": key, "replies": 0, "last_speech_at": 0,
+                     "last_speech_count": 0, "pending": False}
+            self._episodes[chat_id] = state
+        state["context"] = episode["rows"]
+        state["last_seen"] = now
+        timestamps = [item["timestamp"] for item in episode["rows"]]
+        current = sum(t >= now - 60 for t in timestamps)
+        previous = sum(now - 120 <= t < now - 60 for t in timestamps)
+        phase = ("rising" if current >= previous + 2 else
+                 "falling" if previous >= 2 and current * 2 < previous else "peak")
+        state["phase"] = phase
+        if state["pending"]:
+            return False, "AI evaluation already running"
+        if episode["count"] < policy["proactive_min_messages"]:
+            return False, "episode too short"
+        if episode["participants"] < policy["proactive_min_participants"]:
+            return False, "too few participants"
+        if timestamps[-1] - timestamps[0] < policy["proactive_min_age_sec"]:
+            return False, "episode too young"
+        if state["replies"] >= policy["proactive_max_replies"]:
+            return False, "episode reply budget reached"
+        if state["last_speech_at"]:
+            if now - state["last_speech_at"] < policy["proactive_cooldown_sec"]:
+                return False, "episode cooldown"
+            if episode["count"] - state["last_speech_count"] < policy["proactive_min_new_messages"]:
+                return False, "not enough new turns"
+        if policy["proactive_phases"] == "rising_peak" and phase == "falling":
+            return False, "conversation cooling"
+        return True, f"episode {phase}"
+
+    def episode_context(self, chat_id: str, limit: int) -> tuple[list[dict], str]:
+        with self._lock:
+            state = self._episodes.get(chat_id)
+            if not state:
+                return [], ""
+            return list(state.get("context", [])[-limit:]), state.get("phase", "")
 
     def record_eval(self, chat_id: str) -> None:
         """Manually update last evaluation time (e.g., after AI returned blank)."""
@@ -140,9 +212,12 @@ class ProactiveGate:
         Each consecutive silence doubles the effective evaluation interval,
         capped at 16x, so the gate backs off during prolonged crises.
         """
-        self._consecutive_silence[chat_id] = (
-            self._consecutive_silence.get(chat_id, 0) + 1
-        )
+        with self._lock:
+            self._consecutive_silence[chat_id] = (
+                self._consecutive_silence.get(chat_id, 0) + 1
+            )
+            if chat_id in self._episodes:
+                self._episodes[chat_id]["pending"] = False
         logger.debug(
             "Proactive: silence recorded for chat=%s (consecutive=%d)",
             chat_id[:20], self._consecutive_silence[chat_id],
@@ -150,6 +225,13 @@ class ProactiveGate:
 
     def record_speech(self, chat_id: str) -> None:
         """Reset consecutive silence counter when the AI successfully speaks."""
+        with self._lock:
+            state = self._episodes.get(chat_id)
+            if state:
+                state["pending"] = False
+                state["replies"] += 1
+                state["last_speech_at"] = time.time()
+                state["last_speech_count"] = len(state.get("context", []))
         if self._consecutive_silence.get(chat_id, 0) > 0:
             logger.debug(
                 "Proactive: speech recorded for chat=%s — resetting "
@@ -157,6 +239,12 @@ class ProactiveGate:
                 chat_id[:20], self._consecutive_silence[chat_id],
             )
             self._consecutive_silence[chat_id] = 0
+
+    def record_failure(self, chat_id: str) -> None:
+        """Release a reserved evaluation after an API error."""
+        with self._lock:
+            if chat_id in self._episodes:
+                self._episodes[chat_id]["pending"] = False
 
     def get_consecutive_silence(self, chat_id: str) -> int:
         """Return the current consecutive silence count for a group."""

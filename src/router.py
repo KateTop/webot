@@ -67,7 +67,7 @@ class MessageRouter:
         self._admin = admin_handler
         self._nicks = nickname_service
         self._config = config
-        self._proactive = ProactiveGate(config)
+        self._proactive = ProactiveGate(config, store)
         self._sticky = StickyMentionTracker(
             ttl_sec=config.sticky_mention_ttl_sec,
         ) if config.sticky_mention_enabled else None
@@ -92,6 +92,11 @@ class MessageRouter:
         while self._memory.check_and_consolidate(
                 chat_id, force=True, through_row_id=through_row_id):
             pass
+
+    def consolidate_settled_memories(self) -> None:
+        """Pick up groups whose latest conversation ended during silence."""
+        for chat_id in self._store.list_group_ids():
+            self._memory.check_and_consolidate(chat_id)
 
     def handle(self, msg: dict) -> Optional[str]:
         """Process an incoming group chat message.
@@ -491,13 +496,22 @@ class MessageRouter:
 
         # The same user-configured recent-message window is used for all
         # conversational replies. Include the current message for ambient chat.
-        count = max(1, min(getattr(self._config, "chat_context_count", 30), 100))
-        context = self._store.get_recent_messages(
-            msg["chat_id"], msg.get("timestamp", now), limit=count,
-        )
+        count = max(1, min(max(getattr(self._config, "chat_context_count", 30),
+                               getattr(mode, "context_count", 0)), 100))
+        episode_context = getattr(self._proactive, "episode_context", None)
+        episode_phase = ""
+        if callable(episode_context):
+            context, episode_phase = episode_context(msg["chat_id"], count)
+        else:
+            context = []
+        if not context:
+            context = self._store.get_recent_messages(
+                msg["chat_id"], msg.get("timestamp", now), limit=count,
+            )
 
         if not context:
             logger.debug("Proactive: no context available for %s", msg["chat_id"])
+            self._proactive.record_failure(msg["chat_id"])
             return None
 
         # Resolve nicknames
@@ -512,15 +526,30 @@ class MessageRouter:
         )
 
         try:
-            ai_reply = self._summarizer.proactive_chat(
+            chat_kwargs = dict(
                 mode=mode,
                 context_messages=context,
                 bot_name=self._config.bot_display_name,
                 group_name=msg.get("group_name", msg.get("chat_id", "群聊")),
                 group_memory="",
             )
+            if episode_phase:
+                chat_kwargs["episode_phase"] = episode_phase
+            ai_reply = self._summarizer.proactive_chat(**chat_kwargs)
+            if ai_reply and ai_reply.strip() == "[[NEED_GROUP_MEMORY]]":
+                memory = self._get_group_memory(msg["chat_id"])
+                if memory:
+                    chat_kwargs["group_memory"] = memory
+                    ai_reply = self._summarizer.proactive_chat(**chat_kwargs)
+                else:
+                    ai_reply = ""
+            if ai_reply and ai_reply.strip() == "[[NEED_GROUP_MEMORY]]":
+                ai_reply = ""
         except Exception as e:
             logger.error("Proactive chat API failed: %s", e)
+            failure = getattr(self._proactive, "record_failure", None)
+            if callable(failure):
+                failure(msg["chat_id"])
             return None
 
         if not ai_reply:

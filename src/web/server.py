@@ -969,7 +969,8 @@ class _UIHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         # Only delegate specific API paths; return 405 for unknown POST paths
         if self.path in ("/api/config", "/api/config/import", "/api/prompts", "/api/start", "/api/stop",
-                         "/api/memory/save", "/api/memory/consolidate",
+                         "/api/memory/save", "/api/memory/create", "/api/memory/consolidate",
+                         "/api/conversation-policy",
                          "/api/nicknames",
                          "/api/welcome/templates",
                          "/api/onboarding/reset",
@@ -991,6 +992,26 @@ class _UIHandler(SimpleHTTPRequestHandler):
 
     def _handle_request(self):
         parsed_path = _urlparse(self.path)
+        if parsed_path.path == "/api/conversation-policy":
+            origin = self.headers.get("Origin", "")
+            if (self.client_address[0] not in ("127.0.0.1", "::1")
+                    or (origin and _urlparse(origin).hostname not in
+                        ("127.0.0.1", "localhost", "::1"))):
+                self.send_json({"ok": False, "error": "Local request required"})
+                return
+            from src.conversation_policy import load_policy, save_policy
+            try:
+                if self.command == "POST":
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 10000:
+                        raise ValueError("策略配置大小无效")
+                    policy = save_policy(json.loads(self.rfile.read(length)))
+                else:
+                    policy = load_policy()
+                self.send_json({"ok": True, "policy": policy})
+            except (ValueError, OSError, json.JSONDecodeError) as exc:
+                self.send_json({"ok": False, "error": str(exc)})
+            return
         if parsed_path.path.startswith("/api/memory"):
             origin = self.headers.get("Origin", "")
             if (self.client_address[0] not in ("127.0.0.1", "::1")
@@ -1007,7 +1028,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                         job = _memory_jobs.get(job_id)
                     self.send_json({"ok": job is not None, "job": job})
                     return
-                if parsed_path.path in ("/api/memory/save", "/api/memory/consolidate"):
+                if parsed_path.path in ("/api/memory/save", "/api/memory/create", "/api/memory/consolidate"):
                     if self.command != "POST":
                         raise ValueError("POST required")
                     length = int(self.headers.get("Content-Length", "0"))
@@ -1017,6 +1038,11 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     chat_id = str(payload.get("chat_id", "")).strip()
                     if not chat_id or len(chat_id) > 256:
                         raise ValueError("群 ID 无效")
+                    if parsed_path.path == "/api/memory/create":
+                        conn, store = _failure_store()
+                        path = store.ensure_group_memory_file(chat_id)
+                        self.send_json({"ok": True, "soul_path": str(path)})
+                        return
                     if parsed_path.path == "/api/memory/save":
                         text_value = payload.get("text", "")
                         if not isinstance(text_value, str):
@@ -1065,8 +1091,9 @@ class _UIHandler(SimpleHTTPRequestHandler):
                         "SELECT chat_id FROM messages UNION SELECT chat_id FROM group_memory ORDER BY chat_id"
                     ).fetchall()
                     groups = []
-                    for row in rows:
-                        chat_id = row[0]
+                    known_ids = {row[0] for row in rows}
+                    known_ids.update(key for key in names if key.endswith("@chatroom"))
+                    for chat_id in sorted(known_ids):
                         info = names.get(chat_id, chat_id)
                         label = info.get("name", chat_id) if isinstance(info, dict) else str(info)
                         groups.append({"chat_id": chat_id, "group_name": label})
@@ -1086,7 +1113,8 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     pending = store.list_pending_memory_segments(chat_id)
                     path = store._soul_path(chat_id)
                     self.send_json({"ok": True, "memory": memory,
-                                    "pending": pending, "soul_path": str(path) if path else ""})
+                                    "pending": pending, "soul_path": str(path) if path else "",
+                                    "soul_exists": bool(path and path.exists())})
                     return
                 raise ValueError("Unknown memory endpoint")
             except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
