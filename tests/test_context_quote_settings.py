@@ -11,7 +11,7 @@ from src.db.store import MessageStore
 from src.router import MessageRouter
 from src.summarize import create_summarizer
 from src.summarize.openai_backend import OpenAISummarizer
-from src.wechat.quote import parse_quote
+from src.wechat.quote import inspect_quote, parse_quote
 from src.wechat.wcdb_backend import WcdbBackend
 from src.web.server import _validate_ai_numeric_settings
 
@@ -66,6 +66,66 @@ def test_quote_of_another_person_extracts_only_new_mention_text():
     message = backend._standardize(raw, 'Group', 'g@chatroom')
     assert message['content'] == '你怎么看？'
     assert message['is_at_mentioned'] is False
+
+
+def test_quote_with_encoded_xml_and_identity_mention_in_outer_source():
+    xml = ('<msg><appmsg><type> 57 </type><title>继续问</title>'
+           '<refermsg><fromusr>wxid_other</fromusr>'
+           '<content>旧消息里有@机器人</content></refermsg></appmsg>'
+           '<msgsource>&lt;msgsource&gt;&lt;atuserlist&gt;wxid_bot&lt;/atuserlist&gt;'
+           '&lt;/msgsource&gt;</msgsource></msg>')
+    info = inspect_quote('wxid_sender:\n' + xml, 'wxid_bot')
+    assert info.valid and info.mentions_this_account
+    assert not info.quotes_this_account
+    backend = WcdbBackend(bot_display_name='机器人', groups=['Group'])
+    backend._client = SimpleNamespace(
+        _config={'myWxid': 'wxid_bot'}, resolve_nickname=lambda wxid: wxid,
+    )
+    raw = {'sender_username': 'wxid_sender', 'message_content': xml,
+           'localType': 49, 'create_time': 123, 'server_id': 'msg-2'}
+    message = backend._standardize(raw, 'Group', 'g@chatroom')
+    assert message['is_at_mentioned'] is True
+    assert message['content'] == '继续问'
+
+
+def test_quote_of_bot_without_new_title_is_still_routable():
+    xml = ('<msg><appmsg><type>57</type><title></title>'
+           '<refermsg><fromusr>wxid_bot</fromusr><content>原回答</content>'
+           '</refermsg></appmsg></msg>')
+    backend = WcdbBackend(bot_display_name='机器人', groups=['Group'])
+    backend._client = SimpleNamespace(
+        _config={'myWxid': 'wxid_bot'}, resolve_nickname=lambda wxid: wxid,
+    )
+    raw = {'sender_username': 'wxid_sender', 'message_content': xml,
+           'localType': 49, 'create_time': 123, 'server_id': 'msg-3'}
+    message = backend._standardize(raw, 'Group', 'g@chatroom')
+    assert message['quotes_bot'] is True
+    assert message['content'] == '[引用了你的消息]'
+    assert message['quoted_content'] == '原回答'
+
+
+def test_direct_reply_carries_exact_recipient_for_native_mention():
+    import time
+
+    router = MessageRouter.__new__(MessageRouter)
+    router._config = SimpleNamespace(bot_display_name='Bot', chat_context_count=30,
+                                     admin_wxid='')
+    router._store = SimpleNamespace(insert_message=lambda msg: True,
+                                    get_recent_messages=lambda *a, **kw: [])
+    router._memory = SimpleNamespace(check_and_consolidate=lambda chat_id: False)
+    router._nicks = SimpleNamespace(resolve_name=lambda wxid: 'Alice',
+                                    resolve_wxids=lambda text: text)
+    router._summarizer = SimpleNamespace(chat=lambda **kw: '回答')
+    router._detector = SimpleNamespace(is_trigger=lambda **kw: False)
+    router._sticky = None
+    router._proactive = None
+    router._admin = SimpleNamespace(handle=lambda *a: None)
+    router.messages_processed = 0
+    msg = {'chat_id': 'g', 'group_name': 'G', 'sender_id': 'wxid_alice',
+           'sender_name': 'Alice', 'message_id': 'm', 'content': '@Bot 你好',
+           'is_at_mentioned': True, 'timestamp': int(time.time())}
+    assert router.handle(msg) == '@Alice 回答'
+    assert msg['reply_mention'] == ('@Alice ', 'wxid_alice')
 
 
 def test_custom_provider_and_retry_count():

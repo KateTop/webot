@@ -240,6 +240,16 @@ class MessageRouter:
             else:
                 return None
 
+        # Carry the exact recipient ID to the Windows sender. Plain @text
+        # alone does not create WeChat's native mention metadata.
+        if is_at and reply:
+            names = [self._nicks.resolve_name(msg["sender_id"]), msg["sender_name"]]
+            for name in names:
+                prefix = f"@{name} "
+                if name and reply.startswith(prefix):
+                    msg["reply_mention"] = (prefix, msg["sender_id"])
+                    break
+
         # ── Strip markdown — WeChat can't render it ──────────────
         return self._strip_markdown(reply) if reply else None
 

@@ -717,8 +717,63 @@ class WeChatWindowController:
 
     # ── Internals ─────────────────────────────────────────────────
 
-    def send_message(self, hwnd: int, text: str) -> bool:
-        """Send a text message via keyboard only: Ctrl+V → Enter.
+    @staticmethod
+    def _mention_window_handles(hwnd: int) -> set[int] | None:
+        """Snapshot existing WeChat windows before opening the @ picker."""
+        try:
+            import uiautomation as auto
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            return {window.NativeWindowHandle for window in auto.GetRootControl().GetChildren()
+                    if window.ProcessId == pid and window.NativeWindowHandle}
+        except Exception:
+            return None
+
+    @staticmethod
+    def _select_mention_candidate(hwnd: int, label: str,
+                                  existing_handles: set[int]) -> bool:
+        """Select one exact match from a separate WeChat @ suggestion popup.
+
+        Never guess the first candidate: group members can share a nickname.
+        WeChat versions that do not expose the popup through UI Automation
+        fail closed and leave the message unsent.
+        """
+        try:
+            import uiautomation as auto
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            root = auto.GetRootControl()
+            matches = []
+
+            def visit(control, depth: int) -> None:
+                if depth > 5 or len(matches) > 1:
+                    return
+                if (control.Name or "").strip() == label and not control.IsOffscreen:
+                    matches.append(control)
+                for child in control.GetChildren()[:100]:
+                    visit(child, depth + 1)
+
+            for popup in root.GetChildren():
+                if (popup.ProcessId != pid or not popup.NativeWindowHandle
+                        or popup.NativeWindowHandle in existing_handles):
+                    continue
+                if popup.IsOffscreen:
+                    continue
+                rect = popup.BoundingRectangle
+                if rect.right - rect.left > 600 or rect.bottom - rect.top > 700:
+                    continue
+                for child in popup.GetChildren()[:100]:
+                    visit(child, 1)
+            if len(matches) != 1:
+                logger.warning("Native @ candidate count=%d; refusing to send", len(matches))
+                return False
+            matches[0].Click()
+            return True
+        except Exception as exc:
+            logger.warning("Native @ selection unavailable: %s", type(exc).__name__)
+            return False
+
+    def send_message(self, hwnd: int, text: str,
+                     mention: tuple[str, str] | None = None) -> bool:
+        """Send text via WeChat's editor; select a native @ candidate if given.
 
         The caller must have activated the exact target chat window.
         The return value confirms keyboard actions, not WeChat delivery.
@@ -746,7 +801,32 @@ class WeChatWindowController:
             if not self._foreground_matches(hwnd):
                 return False
 
-        logger.info("Sending message: %d chars to HWND=%s (keyboard-only)", len(text), hwnd)
+        logger.info("Sending message: %d chars to HWND=%s native_mention=%s",
+                    len(text), hwnd, bool(mention))
+
+        if mention:
+            prefix, recipient_id = mention
+            if not recipient_id or not text.startswith(prefix):
+                logger.error("Native @ recipient/prefix mismatch; refusing to send")
+                return False
+            existing_windows = self._mention_window_handles(hwnd)
+            if existing_windows is None:
+                logger.error("Native @ window inventory unavailable; refusing to send")
+                return False
+            label = prefix[1:].strip()
+            send_combo(0x10, 0x32)  # Shift+2: type @ to open WeChat's member picker
+            self._set_clipboard(label)
+            send_combo(0x11, 0x56)  # paste search label into the picker
+            time.sleep(0.5)
+            if (not self._foreground_matches(hwnd)
+                    or not self._select_mention_candidate(hwnd, label, existing_windows)):
+                press_key(0x1B)  # Escape; keep the draft for manual inspection
+                logger.error("Native @ could not be verified; message left unsent")
+                return False
+            text = text[len(prefix):]
+            if not text:
+                logger.error("Native @ reply has no body; refusing to send")
+                return False
 
         # Set clipboard and paste
         self._set_clipboard(text)
@@ -795,7 +875,8 @@ class WeChatWindowController:
     # ── Full send pipeline ────────────────────────────────────────
 
     def send_to_chat(self, group_name: str, text: str,
-                     max_retries: int = 2) -> bool:
+                     max_retries: int = 2,
+                     mention: tuple[str, str] | None = None) -> bool:
         """Complete send pipeline: find → activate → navigate → send.
 
         This is the main entry point for sending a message.
@@ -850,7 +931,8 @@ class WeChatWindowController:
                 else:
                     hwnd = self._adopt_foreground_hwnd(hwnd, "after navigation")
 
-            if not self.send_message(hwnd, text):
+            if not (self.send_message(hwnd, text, mention=mention) if mention
+                    else self.send_message(hwnd, text)):
                 self._log_failure(group_name, text, "send failed", hwnd)
                 # Paste may already have reached the input box. Repeating the
                 # whole send can append a duplicate draft or send twice.

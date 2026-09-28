@@ -1,5 +1,6 @@
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -138,6 +139,69 @@ class WeChatWindowControllerTests(unittest.TestCase):
                 c for c in press_key.call_args_list if c[0][0] == 0x0D
             ]
             self.assertTrue(len(enter_calls) > 0, "Enter key should be pressed to send")
+
+    def test_native_mention_requires_verified_picker_selection(self):
+        controller = WeChatWindowController()
+        with (
+            patch.object(controller, "_validate_hwnd", return_value=True),
+            patch.object(controller, "_foreground_matches", return_value=True),
+            patch.object(controller, "_mention_window_handles", return_value={12345}),
+            patch.object(controller, "_select_mention_candidate", return_value=False),
+            patch.object(controller, "_set_clipboard"),
+            patch("src.wechat.window_controller.send_combo"),
+            patch("src.wechat.window_controller.press_key") as press_key,
+            patch("src.wechat.window_controller.time.sleep"),
+        ):
+            self.assertFalse(controller.send_message(
+                12345, "@Alice 你好", mention=("@Alice ", "wxid_alice")))
+            self.assertNotIn(0x0D, [call.args[0] for call in press_key.call_args_list])
+
+    def test_native_mention_sends_body_only_after_picker_selection(self):
+        controller = WeChatWindowController()
+        clipboard = []
+        with (
+            patch.object(controller, "_validate_hwnd", return_value=True),
+            patch.object(controller, "_foreground_matches", return_value=True),
+            patch.object(controller, "_mention_window_handles", return_value={12345}),
+            patch.object(controller, "_select_mention_candidate", return_value=True) as picker,
+            patch.object(controller, "_set_clipboard", side_effect=clipboard.append),
+            patch("src.wechat.window_controller.send_combo") as send_combo,
+            patch("src.wechat.window_controller.press_key") as press_key,
+            patch("src.wechat.window_controller.time.sleep"),
+        ):
+            self.assertTrue(controller.send_message(
+                12345, "@Alice 你好", mention=("@Alice ", "wxid_alice")))
+            picker.assert_called_once_with(12345, "Alice", {12345})
+            self.assertEqual(clipboard, ["Alice", "你好"])
+            self.assertIn((0x10, 0x32), [call.args for call in send_combo.call_args_list])
+            self.assertIn(0x0D, [call.args[0] for call in press_key.call_args_list])
+
+    def test_native_mention_picker_rejects_ambiguous_names(self):
+        def candidate():
+            item = MagicMock()
+            item.Name = 'Alice'
+            item.IsOffscreen = False
+            item.GetChildren.return_value = []
+            return item
+
+        first, second = candidate(), candidate()
+        popup = MagicMock()
+        popup.ProcessId = 10
+        popup.NativeWindowHandle = 200
+        popup.IsOffscreen = False
+        popup.BoundingRectangle = SimpleNamespace(left=0, top=0, right=300, bottom=200)
+        popup.Name = ''
+        popup.GetChildren.return_value = [first, second]
+        root = MagicMock()
+        root.GetChildren.return_value = [popup]
+        with (
+            patch('src.wechat.window_controller.win32process.GetWindowThreadProcessId',
+                  return_value=(1, 10)),
+            patch('uiautomation.GetRootControl', return_value=root),
+        ):
+            self.assertFalse(WeChatWindowController._select_mention_candidate(100, 'Alice', {100}))
+            first.Click.assert_not_called()
+            second.Click.assert_not_called()
 
     def test_find_hwnd_rejects_small_wechat_login_prompt(self):
         controller = WeChatWindowController()

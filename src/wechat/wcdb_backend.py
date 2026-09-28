@@ -557,7 +557,10 @@ class WcdbBackend(AbstractWeChatBackend):
                 # _send_and_confirm uses window_controller (keyboard), not
                 # _client (WCDB).  Don't hold _client_lock during send —
                 # it blocks the poll loop from reading new messages.
-                success = self._send_and_confirm(group_name, talker, reply)
+                success = self._send_and_confirm(
+                    group_name, talker, reply,
+                    mention=standardized.get("reply_mention"),
+                )
                 if success:
                     logger.info(
                         "Reply keyboard action completed: group='%s' (%d chars)",
@@ -611,14 +614,24 @@ class WcdbBackend(AbstractWeChatBackend):
         sender = str(msg.get("sender_username", msg.get("senderUsername", msg.get("sender", ""))))
         content = str(msg.get("message_content", msg.get("content", ""))).strip()
         local_type = int(msg.get("localType", msg.get("msg_type", 1)))
-        from .quote import parse_quote
+        from .quote import inspect_quote
         own_wxid = (getattr(self._client, "_config", None) or {}).get("myWxid", "")
-        quotes_bot, quote_text, quoted_content = (
-            parse_quote(content, own_wxid) if local_type == 49
-            else (False, content, "")
-        )
+        quote = inspect_quote(content, own_wxid) if local_type == 49 else None
+        quotes_bot = quote.quotes_this_account if quote else False
+        quoted_content = quote.quoted_text if quote else ""
         if local_type == 49:
-            content = quote_text
+            logger.debug(
+                "App message inspected: quote_valid=%s own_id_available=%s "
+                "quotes_bot=%s mentions_bot_id=%s has_new_text=%s",
+                quote.valid, bool(own_wxid), quotes_bot,
+                quote.mentions_this_account, bool(quote.new_text),
+            )
+            if quote.valid:
+                content = quote.new_text or ("[引用了你的消息]" if quotes_bot else "")
+            elif "<msg" in content or "&lt;msg" in content:
+                # Never search raw app XML: an @ in the quoted old message
+                # would otherwise look like a new mention.
+                return None
 
         # ── Voice recognition ──────────────────────────────────────
         # Voice messages (localType=34) have empty message_content;
@@ -700,6 +713,7 @@ class WcdbBackend(AbstractWeChatBackend):
             f"@{self._bot_name}" in resolved_content
             or f"@{self._bot_name}" in content
         )
+        is_at = bool(is_at or (quote and quote.mentions_this_account))
         if local_type == 49 and (quotes_bot or is_at):
             logger.info(
                 "Quote trigger classified: quotes_bot=%s at_bot=%s own_id_available=%s",
@@ -743,7 +757,8 @@ class WcdbBackend(AbstractWeChatBackend):
     # ── Message sending ──────────────────────────────────────────────
 
     def _send_and_confirm(self, group_name: str, talker: str,
-                          content: str, record_failure: bool = True) -> bool:
+                          content: str, record_failure: bool = True,
+                          mention: tuple[str, str] | None = None) -> bool:
         """Send via WeChatWindowController (fire-and-forget).
 
         Returns True if the keyboard send action completed successfully.
@@ -752,7 +767,12 @@ class WcdbBackend(AbstractWeChatBackend):
         """
         try:
             with self._send_lock:
-                success = self._window.send_to_chat(group_name, content)
+                if mention:
+                    success = self._window.send_to_chat(
+                        group_name, content, mention=mention,
+                    )
+                else:
+                    success = self._window.send_to_chat(group_name, content)
         except Exception:
             logger.exception("Send raised for group '%s'", group_name)
             success = False
