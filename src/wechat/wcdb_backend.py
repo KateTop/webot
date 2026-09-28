@@ -769,7 +769,7 @@ class WcdbBackend(AbstractWeChatBackend):
             with self._send_lock:
                 if mention:
                     success = self._window.send_to_chat(
-                        group_name, content, mention=mention,
+                        group_name, content, mention=mention, chat_id=talker,
                     )
                 else:
                     success = self._window.send_to_chat(group_name, content)
