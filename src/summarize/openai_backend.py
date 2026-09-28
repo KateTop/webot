@@ -10,10 +10,13 @@ Base URL and model are fully configurable — set ``OPENAI_BASE_URL`` /
 """
 
 import json
+import ipaddress
 import logging
 import time
+from urllib.parse import urlparse
 
 from openai import (
+    DefaultHttpxClient,
     OpenAI,
     RateLimitError,
     APIConnectionError,
@@ -35,6 +38,17 @@ from .prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_loopback_url(base_url: str) -> bool:
+    """Local API services must not be sent through an inherited HTTP proxy."""
+    host = urlparse(base_url).hostname
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
 
 # Tool schema for structured output — matches SummaryResult Pydantic model
 STORE_SUMMARY_TOOL = {
@@ -178,8 +192,11 @@ class OpenAISummarizer(AbstractSummarizer):
                  chunk_size: int = 400,
                  max_retries: int = 3,
                  web_search: bool = False):
+        client_options = {}
+        if _is_loopback_url(base_url):
+            client_options["http_client"] = DefaultHttpxClient(trust_env=False)
         self.client = OpenAI(api_key=api_key, base_url=base_url,
-                             timeout=25.0, max_retries=0)
+                             timeout=25.0, max_retries=0, **client_options)
         self.model = model
         self.chunk_size = chunk_size
         self.max_retries = max_retries
