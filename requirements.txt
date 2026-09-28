@@ -9,6 +9,7 @@ pywebview>=5.0
 Pillow>=10.0
 psutil>=5.0
 pyperclip>=1.8
+pywechat127==1.9.8
 
 # Voice recognition — SILK decode + local/cloud ASR
 silk-python>=0.2.8

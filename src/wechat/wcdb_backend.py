@@ -59,7 +59,11 @@ class WcdbBackend(AbstractWeChatBackend):
         self._running = False
         self._stop_requested = False
         self._client: Optional[WcdbNativeClient] = None
-        self._window = WeChatWindowController()
+        if config is not None and getattr(config, "wechat_backend", "wcdb") == "wcdb_pywechat":
+            from .pywechat_controller import PyWeChatSendController
+            self._window = PyWeChatSendController()
+        else:
+            self._window = WeChatWindowController()
         self._talker_ids: dict[str, str] = {}
         self._known_ids = DedupSet(max_size=MAX_DEDUP_SIZE)
         # Thread safety: WCDB DLL (ctypes) may not be thread-safe internally.

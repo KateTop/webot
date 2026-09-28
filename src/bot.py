@@ -355,7 +355,7 @@ class Bot:
             g.strip() for g in config.wechat_groups.split(",") if g.strip()
         ]
 
-        if config.wechat_backend == "wcdb":
+        if config.wechat_backend in ("wcdb", "wcdb_pywechat"):
             from .wechat.wcdb_backend import WcdbBackend
             return WcdbBackend(
                 bot_display_name=config.bot_display_name,
@@ -388,5 +388,5 @@ class Bot:
         else:
             raise ValueError(
                 f"Unknown WECHAT_BACKEND: '{config.wechat_backend}'. "
-                f"Supported: wcdb, mac_ui, mac_hybrid."
+                f"Supported: wcdb, wcdb_pywechat, mac_ui, mac_hybrid."
             )

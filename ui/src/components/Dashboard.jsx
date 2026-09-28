@@ -117,7 +117,7 @@ function LiveIndicator({ label, ok }) {
   )
 }
 
-const backendLabels = { wcdb: '本地数据库直读', mac_hybrid: 'macOS WeFlow 直读', mac_ui: 'macOS 界面自动化', direct: 'UIA 窗口读取' }
+const backendLabels = { wcdb: '本地数据库直读', wcdb_pywechat: 'WCDB 接收 + pywechat 发送', mac_hybrid: 'macOS WeFlow 直读', mac_ui: 'macOS 界面自动化', direct: 'UIA 窗口读取' }
 const aiLabels = { deepseek: 'DeepSeek', claude: 'Claude' }
 
 export default function Dashboard({ status }) {

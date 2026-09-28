@@ -70,6 +70,7 @@ a = Analysis(
         'src.wechat.wcdb_client', 'src.wechat.mac_hybrid_backend',
         'src.wechat.mac_ui_backend', 'src.wechat.window_controller',
         'src.wechat.keyboard', 'src.wechat.helpers', 'src.wechat.extract_key',
+        'src.wechat.pywechat_controller',
         'src.wechat.native', 'src.wechat.native.injector',
         'src.web', 'src.web.server',
         'src.router', 'src.welcome',
@@ -81,13 +82,16 @@ a = Analysis(
         'PIL', 'PIL.Image', 'PIL.ImageDraw',
         'psutil', 'pyperclip',
         'win32api', 'comtypes',
+        'pyweixin', 'pyweixin.Uielements', 'pyweixin.WeChatAuto',
+        'pyweixin.WeChatTools', 'pyweixin.utils', 'pywinauto',
+        'pyautogui', 'emoji', 'sounddevice', 'soundfile',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=['tkinter', 'matplotlib', 'scipy', 'jedi', 'IPython',
-              'faster_whisper', 'ctranslate2', 'numpy', 'onnxruntime',
-              'pysilk', 'av', 'sounddevice', 'soundfile',
+              'faster_whisper', 'ctranslate2', 'onnxruntime',
+              'pysilk', 'av',
               # Exclude packages that are NOT webot dependencies but may
               # be installed in the local Python environment.  Bundling
               # them bloats the EXE by hundreds of MB.
