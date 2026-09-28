@@ -43,7 +43,8 @@ class MemoryConsolidator:
         self._retry_after: dict[str, float] = {}
 
     def check_and_consolidate(self, chat_id: str, force: bool = False,
-                              through_row_id: int | None = None) -> bool:
+                              through_row_id: int | None = None,
+                              bypass_cooldown: bool = False) -> bool:
         """Consolidate when due; return False on skips or failures."""
         with self._lock:
             if chat_id in self._active:
@@ -55,7 +56,7 @@ class MemoryConsolidator:
                 # Discard the late result. The next attempt reads the same
                 # unprocessed messages from the store.
                 del self._timed_out[chat_id]
-            if time.monotonic() < self._retry_after.get(chat_id, 0):
+            if not bypass_cooldown and time.monotonic() < self._retry_after.get(chat_id, 0):
                 return False
             self._active.add(chat_id)
 
@@ -68,6 +69,30 @@ class MemoryConsolidator:
         finally:
             with self._lock:
                 self._active.remove(chat_id)
+
+    def save_manual_text(self, chat_id: str, text: str) -> None:
+        """Save an edited soul only when no AI update can overwrite it."""
+        with self._lock:
+            if chat_id in self._active:
+                raise RuntimeError("该群正在整理记忆，请稍后再保存")
+            self._active.add(chat_id)
+        try:
+            self._store.save_group_memory_text(chat_id, text)
+        finally:
+            with self._lock:
+                self._active.remove(chat_id)
+
+    def consolidate_first_pending_segment(self, chat_id: str,
+                                          end_row_id: int) -> bool:
+        """Process only the earliest pending range so the cursor cannot skip data."""
+        pending = self._store.list_pending_memory_segments(chat_id)
+        segments = pending["segments"]
+        if not segments or segments[0]["end_id"] != end_row_id:
+            raise ValueError("请先整理最早的待处理时间段，或刷新列表")
+        return self.check_and_consolidate(
+            chat_id, force=True, through_row_id=end_row_id,
+            bypass_cooldown=True,
+        )
 
     def _defer_retry(self, chat_id: str) -> None:
         with self._lock:

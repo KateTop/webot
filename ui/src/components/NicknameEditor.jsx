@@ -7,7 +7,7 @@ const pageTransition = {
   animate: { opacity: 1, y: 0 },
 }
 
-export default function NicknameEditor() {
+export default function NicknameEditor({ groupFromParent = '', hideGroupSelector = false }) {
   const [groups, setGroups] = useState([])
   const [selectedGroup, setSelectedGroup] = useState('')
   const [members, setMembers] = useState([])
@@ -23,7 +23,7 @@ export default function NicknameEditor() {
         const data = await res.json()
         if (data.ok) {
           setGroups(data.groups || [])
-          if (data.groups?.length > 0) {
+          if (!groupFromParent && data.groups?.length > 0) {
             setSelectedGroup(data.groups[0].chat_id)
           }
         }
@@ -32,7 +32,11 @@ export default function NicknameEditor() {
       }
     }
     load()
-  }, [])
+  }, [groupFromParent])
+
+  useEffect(() => {
+    if (groupFromParent) setSelectedGroup(groupFromParent)
+  }, [groupFromParent])
 
   // Load members when group changes
   useEffect(() => {
@@ -86,7 +90,7 @@ export default function NicknameEditor() {
         <p className="text-sm text-text-muted mb-5">为群友设置显示昵称。AI 回复中会自动将微信 ID（wxid_xxx）替换为这里设置的昵称。</p>
 
         {/* Group selector */}
-        <div className="mb-5">
+        {!hideGroupSelector && <div className="mb-5">
           <label className="block text-[13px] font-medium text-text-muted mb-1.5">选择群聊</label>
           <select
             value={selectedGroup}
@@ -99,7 +103,7 @@ export default function NicknameEditor() {
               </option>
             ))}
           </select>
-        </div>
+        </div>}
 
         {error && (
           <div className="mb-4 px-4 py-3 bg-[#d45656]/5 border border-[#d45656]/20 rounded-lg text-sm text-[#d45656]">{error}</div>

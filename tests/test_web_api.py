@@ -730,6 +730,55 @@ def _build_handler(path: str, method: str = "GET", body: bytes = b"",
     return handler, sock
 
 
+class MemoryEndpointTests(unittest.TestCase):
+    """Exercise the memory API against a disposable SQLite file only."""
+
+    def test_edit_and_preview_do_not_advance_cursor(self):
+        from src.db import MessageStore, initialize_db
+
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = str(Path(directory) / "messages.db")
+            conn = initialize_db(db_path)
+            store = MessageStore(conn)
+            store.insert_message({
+                "message_id": "synthetic-1", "chat_id": "test@chatroom",
+                "sender_id": "user", "sender_name": "Test User",
+                "content": "synthetic message", "timestamp": 100,
+            })
+            conn.close()
+
+            def call(path, payload=None):
+                body = json.dumps(payload).encode() if payload is not None else b""
+                _, sock = _build_handler(path, method="POST" if payload is not None else "GET",
+                                         body=body, headers={"Content-Type": "application/json"})
+                return json.loads(sock.get_response_text().split("\r\n\r\n", 1)[1])
+
+            with patch("src.web.server._message_db_path", return_value=db_path), \
+                 patch("src.web.server._memory_runtime", None):
+                state = call("/api/memory?chat_id=test%40chatroom")
+                self.assertTrue(state["ok"])
+                segment = state["pending"]["segments"][0]
+                preview = call(f"/api/memory/segment?chat_id=test%40chatroom&"
+                               f"start_id={segment['start_id']}&end_id={segment['end_id']}")
+                self.assertEqual(preview["messages"][0]["content"], "synthetic message")
+                saved = call("/api/memory/save", {"chat_id": "test@chatroom", "text": "test soul"})
+                self.assertTrue(saved["ok"])
+                state = call("/api/memory?chat_id=test%40chatroom")
+                self.assertEqual(state["memory"]["memory_text"], "test soul")
+                self.assertIsNone(state["memory"]["last_message_id"])
+                self.assertEqual(state["pending"]["segments"][0]["count"], 1)
+
+                with patch.dict("src.web.server._memory_jobs", {
+                    "synthetic-job": {"state": "running", "chat_id": "test@chatroom"},
+                }, clear=True):
+                    blocked = call("/api/memory/save", {
+                        "chat_id": "test@chatroom", "text": "would overwrite",
+                    })
+                    self.assertFalse(blocked["ok"])
+                self.assertEqual(call("/api/memory?chat_id=test%40chatroom")
+                                 ["memory"]["memory_text"], "test soul")
+
+
 # ---------------------------------------------------------------------------
 # _ServerStatus tests
 # ---------------------------------------------------------------------------
@@ -1092,7 +1141,7 @@ class ApiConfigEndpointTests(unittest.TestCase):
             self.assertEqual(config["deepseek_base_url"], "https://proxy.example.com/v1")
             self.assertEqual(config["anthropic_base_url"], "https://claude-proxy.example.com")
             self.assertEqual(config["bot_display_name"], "MyBot")
-            self.assertFalse(config["fun_enabled"])
+            self.assertNotIn("fun_enabled", config)
 
     def test_load_config_reads_openai_values(self):
         """GET /api/load-config returns openai fields (masked key + base_url/model)."""
@@ -1115,8 +1164,8 @@ class ApiConfigEndpointTests(unittest.TestCase):
             self.assertEqual(config["openai_base_url"], "https://open.bigmodel.cn/api/paas/v4/")
             self.assertEqual(config["openai_model"], "glm-4-flash")
 
-    def test_load_config_reads_feishu_export_values(self):
-        """GET /api/load-config reads Feishu export settings from .env."""
+    def test_load_config_hides_retired_feishu_values(self):
+        """Old Feishu values are not exposed by the active settings API."""
         with patch("src.web.server._find_or_create_env") as mock_find:
             fake_env = MagicMock()
             fake_env.exists.return_value = True
@@ -1145,22 +1194,7 @@ class ApiConfigEndpointTests(unittest.TestCase):
             body = json.loads(parts[1])
 
         config = body["config"]
-        self.assertTrue(config["feishu_export_enabled"])
-        self.assertEqual(config["feishu_app_id"], "cli_test")
-        self.assertEqual(config["feishu_app_secret"], "secret_test")
-        self.assertEqual(config["feishu_export_mode"], "knowledge")
-        self.assertEqual(config["feishu_export_window_hours"], 6)
-        self.assertTrue(config["feishu_auto_sync_enabled"])
-        self.assertEqual(config["feishu_auto_sync_min_messages"], 7)
-        self.assertEqual(config["feishu_auto_sync_cooldown_sec"], 900)
-        self.assertEqual(config["feishu_knowledge_base_name"], "webot 自动知识库")
-        self.assertEqual(config["feishu_knowledge_folder_token"], "fld_knowledge")
-        self.assertEqual(config["feishu_export_trigger_keywords"], ["同步到飞书", "导出到飞书"])
-        self.assertEqual(config["feishu_spreadsheet_token"], "sht_test")
-        self.assertEqual(config["feishu_spreadsheet_range"], "Sheet1!A:H")
-        self.assertEqual(config["feishu_bitable_app_token"], "base_test")
-        self.assertEqual(config["feishu_bitable_table_id"], "tbl_test")
-        self.assertEqual(config["feishu_doc_folder_token"], "fld_test")
+        self.assertFalse(any(key.startswith("feishu_") for key in config))
 
     def test_load_config_empty_env_returns_defaults(self):
         """GET /api/load-config with empty env returns defaults."""
@@ -1282,7 +1316,7 @@ class ApiConfigEndpointTests(unittest.TestCase):
             self.assertIn("DEEPSEEK_BASE_URL=https://proxy.example.com/v1", saved_content)
             self.assertIn("ANTHROPIC_BASE_URL=https://claude-proxy.example.com", saved_content)
             self.assertIn("BOT_DISPLAY_NAME=new-name", saved_content)
-            self.assertIn("FUN_ENABLED=false", saved_content)
+            self.assertNotIn("FUN_ENABLED=", saved_content)
             self.assertIn("AI_BACKEND=deepseek", saved_content)
         finally:
             tmp_env.unlink(missing_ok=True)
@@ -1384,8 +1418,8 @@ class ApiConfigEndpointTests(unittest.TestCase):
                 f.unlink(missing_ok=True)
             tmp_dir.rmdir()
 
-    def test_save_config_roundtrip_feishu_export_values(self):
-        """POST /api/config persists Feishu settings and load-config reads them."""
+    def test_save_config_ignores_retired_feishu_values(self):
+        """POST /api/config does not reintroduce removed Feishu settings."""
         tmp_dir = Path(tempfile.mkdtemp())
         tmp_env = tmp_dir / ".env"
         tmp_env.write_text("AI_BACKEND=deepseek\n", encoding="utf-8")
@@ -1420,22 +1454,7 @@ class ApiConfigEndpointTests(unittest.TestCase):
                 self.assertTrue(result["ok"])
 
             saved = tmp_env.read_text(encoding="utf-8")
-            self.assertIn("FEISHU_EXPORT_ENABLED=true", saved)
-            self.assertIn("FEISHU_APP_ID=cli_test", saved)
-            self.assertIn("FEISHU_APP_SECRET=secret_test", saved)
-            self.assertIn("FEISHU_EXPORT_MODE=knowledge", saved)
-            self.assertIn("FEISHU_EXPORT_WINDOW_HOURS=12", saved)
-            self.assertIn("FEISHU_AUTO_SYNC_ENABLED=true", saved)
-            self.assertIn("FEISHU_AUTO_SYNC_MIN_MESSAGES=9", saved)
-            self.assertIn("FEISHU_AUTO_SYNC_COOLDOWN_SEC=1200", saved)
-            self.assertIn("FEISHU_KNOWLEDGE_BASE_NAME=webot 群聊沉淀", saved)
-            self.assertIn("FEISHU_KNOWLEDGE_FOLDER_TOKEN=fld_knowledge", saved)
-            self.assertIn("FEISHU_EXPORT_TRIGGER_KEYWORDS=同步到飞书,飞书沉淀", saved)
-            self.assertIn("FEISHU_SPREADSHEET_TOKEN=sht_test", saved)
-            self.assertIn("FEISHU_SPREADSHEET_RANGE=Sheet1!A:H", saved)
-            self.assertIn("FEISHU_BITABLE_APP_TOKEN=base_test", saved)
-            self.assertIn("FEISHU_BITABLE_TABLE_ID=tbl_test", saved)
-            self.assertIn("FEISHU_DOC_FOLDER_TOKEN=fld_test", saved)
+            self.assertNotIn("FEISHU_", saved)
 
             with patch("src.web.server._find_or_create_env", return_value=tmp_env):
                 handler, sock = _build_handler("/api/load-config")
@@ -1443,14 +1462,7 @@ class ApiConfigEndpointTests(unittest.TestCase):
                 body = json.loads(parts[1])
 
             config = body["config"]
-            self.assertTrue(config["feishu_export_enabled"])
-            self.assertEqual(config["feishu_export_mode"], "knowledge")
-            self.assertTrue(config["feishu_auto_sync_enabled"])
-            self.assertEqual(config["feishu_auto_sync_min_messages"], 9)
-            self.assertEqual(config["feishu_auto_sync_cooldown_sec"], 1200)
-            self.assertEqual(config["feishu_knowledge_base_name"], "webot 群聊沉淀")
-            self.assertEqual(config["feishu_knowledge_folder_token"], "fld_knowledge")
-            self.assertEqual(config["feishu_export_trigger_keywords"], ["同步到飞书", "飞书沉淀"])
+            self.assertFalse(any(key.startswith("feishu_") for key in config))
         finally:
             tmp_env.unlink(missing_ok=True)
             for f in tmp_dir.glob("*"):

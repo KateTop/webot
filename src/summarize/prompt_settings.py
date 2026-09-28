@@ -9,7 +9,7 @@ from pathlib import Path
 from src.config import PROJECT_ROOT
 
 PROMPT_FILE = PROJECT_ROOT / "data" / "prompts.json"
-PROMPT_FIELDS = ("chat", "summary")
+PROMPT_FIELDS = ("chat", "summary", "memory")
 _lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,11 @@ def save_prompt_settings(data: dict) -> dict[str, str]:
     """Validate and atomically persist user instructions."""
     if not isinstance(data, dict):
         raise ValueError("Prompt 配置必须是对象")
-    result = {}
-    for key in PROMPT_FIELDS:
-        value = data.get(key, "")
+    current = load_prompt_settings()
+    result = dict(current)
+    for key, value in data.items():
+        if key not in PROMPT_FIELDS:
+            continue
         if not isinstance(value, str) or len(value) > 12000:
             raise ValueError(f"{key} 必须是 12000 字以内的文本")
         result[key] = value

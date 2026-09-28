@@ -291,6 +291,8 @@ class OpenAISummarizer(AbstractSummarizer):
             existing_memory=escaped_memory,
             new_messages=escaped_msgs,
         )
+        from .prompt_settings import with_user_instructions
+        system_prompt = with_user_instructions(system_prompt, "memory")
 
         def call():
             response = self.client.chat.completions.create(

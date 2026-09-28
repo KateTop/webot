@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Gear, ChartLine, Scroll, Users, Spinner, Sun, Moon, Sliders, CheckSquare, PaperPlaneTilt } from '@phosphor-icons/react'
+import { Gear, ChartLine, Scroll, Brain, Spinner, Sun, Moon, Sliders, PaperPlaneTilt } from '@phosphor-icons/react'
 import Dashboard from './components/Dashboard'
 import ConfigPanel from './components/ConfigPanel'
 import FeaturesPanel from './components/FeaturesPanel'
-import NicknameEditor from './components/NicknameEditor'
+import MemoryPanel from './components/MemoryPanel'
 import LogViewer from './components/LogViewer'
-import TodoManager from './components/TodoManager'
 import SendFailures from './components/SendFailures'
 import Onboarding from './components/Onboarding'
 
@@ -30,16 +29,13 @@ const TABS = [
     id: 'features', label: '功能开关', icon: Sliders,
     subs: [
       { id: 'summarize', label: '总结功能' },
-      { id: 'feishu', label: '飞书同步' },
-      { id: 'fun', label: '趣味抽签' },
       { id: 'proactive', label: '主动发言' },
       { id: 'sticky', label: '粘性提及' },
       { id: 'welcome', label: '欢迎新人' },
       { id: 'log', label: '日志级别' },
     ],
   },
-  { id: 'nicknames', label: '群友昵称', icon: Users },
-  { id: 'todo-manager', label: '群聊待办', icon: CheckSquare },
+  { id: 'memory', label: '记忆', icon: Brain },
   { id: 'send-failures', label: '发送记录', icon: PaperPlaneTilt },
   { id: 'logs', label: '运行日志', icon: Scroll },
 ]
@@ -291,8 +287,7 @@ export default function App() {
             {activeTab === 'dashboard' && <Dashboard status={status} />}
             {activeTab === 'config' && <ConfigPanel activeSection={configSection} onNavigate={setConfigSection} />}
             {activeTab === 'features' && <FeaturesPanel activeSection={featuresSection} onNavigate={setFeaturesSection} />}
-            {activeTab === 'nicknames' && <NicknameEditor />}
-            {activeTab === 'todo-manager' && <TodoManager />}
+            {activeTab === 'memory' && <MemoryPanel />}
             {activeTab === 'send-failures' && <SendFailures />}
             {activeTab === 'logs' && <LogViewer />}
           </motion.div>

@@ -9,6 +9,9 @@ import sqlite3
 import threading
 import time
 import logging
+import hashlib
+import os
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -21,6 +24,40 @@ class MessageStore:
         self.conn = conn
         self._lock = threading.Lock()
         self._trigger_count = 0
+        database = conn.execute("PRAGMA database_list").fetchone()[2]
+        self._memory_root = Path(database).resolve().parent / "memory" if database else None
+
+    def _soul_path(self, chat_id: str) -> Path | None:
+        if self._memory_root is None:
+            return None
+        folder = hashlib.sha256(chat_id.encode("utf-8")).hexdigest()[:24]
+        return self._memory_root / folder / "soul.md"
+
+    def _read_soul(self, chat_id: str, fallback: str) -> str:
+        path = self._soul_path(chat_id)
+        if path is None:
+            return fallback
+        if path.exists():
+            try:
+                return path.read_text(encoding="utf-8")
+            except OSError:
+                logger.exception("Could not read soul.md for a group")
+                return fallback
+        if fallback:
+            self._write_soul(chat_id, fallback)
+        return fallback
+
+    def _write_soul(self, chat_id: str, text: str) -> None:
+        path = self._soul_path(chat_id)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def record_send_failure(self, chat_id: str, group_name: str, content: str) -> int:
         """Keep one record for a final failed send, after internal UI retries."""
@@ -334,7 +371,12 @@ class MessageStore:
                        WHERE chat_id = ?""",
                     (chat_id,),
                 ).fetchone()
-                return dict(row) if row else None
+                if row is None:
+                    return None
+                memory = dict(row)
+                memory["memory_text"] = self._read_soul(
+                    chat_id, memory["memory_text"])
+                return memory
         except sqlite3.InterfaceError:
             logger.debug("get_group_memory skipped: connection closed (shutting down)")
             return None
@@ -344,6 +386,7 @@ class MessageStore:
         """Insert or update a group's memory record."""
         try:
             with self._lock:
+                self._write_soul(chat_id, memory_text)
                 now = time.time()
                 with self.conn:
                     self.conn.execute(
@@ -362,6 +405,80 @@ class MessageStore:
                     )
         except sqlite3.InterfaceError:
             logger.debug("upsert_group_memory skipped: connection closed (shutting down)")
+
+    def save_group_memory_text(self, chat_id: str, memory_text: str) -> None:
+        """Edit one group's soul without advancing its consolidation cursor."""
+        if not chat_id or len(memory_text) > 20000:
+            raise ValueError("群 ID 不能为空，soul.md 不能超过 20000 字")
+        with self._lock:
+            self._write_soul(chat_id, memory_text)
+            now = time.time()
+            with self.conn:
+                self.conn.execute(
+                    """INSERT INTO group_memory
+                       (chat_id, memory_text, message_count, last_message_id,
+                        last_consolidated, created_at, updated_at)
+                       VALUES (?, ?, 0, NULL, NULL, ?, ?)
+                       ON CONFLICT(chat_id) DO UPDATE SET
+                       memory_text=excluded.memory_text,
+                       updated_at=excluded.updated_at""",
+                    (chat_id, memory_text, now, now),
+                )
+
+    def list_pending_memory_segments(self, chat_id: str,
+                                     limit: int = 5000,
+                                     gap_seconds: int = 900) -> dict:
+        """Group unprocessed messages into chronological ranges without content."""
+        if not chat_id:
+            raise ValueError("群 ID 不能为空")
+        limit = min(max(int(limit), 1), 5000)
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT m.id FROM group_memory g
+                   LEFT JOIN messages m ON m.message_id=g.last_message_id
+                   WHERE g.chat_id=?""", (chat_id,),
+            ).fetchone()
+            cursor_id = (row[0] or 0) if row else 0
+            rows = self.conn.execute(
+                """SELECT id, timestamp FROM messages
+                   WHERE chat_id=? AND id>? ORDER BY id ASC LIMIT ?""",
+                (chat_id, cursor_id, limit + 1),
+            ).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        segments = []
+        for row in rows:
+            if (not segments or row["timestamp"] - segments[-1]["end_time"] > gap_seconds
+                    or segments[-1]["count"] >= 100):
+                segments.append({
+                    "start_id": row["id"], "end_id": row["id"],
+                    "start_time": row["timestamp"], "end_time": row["timestamp"],
+                    "count": 1,
+                })
+            else:
+                segments[-1]["end_id"] = row["id"]
+                segments[-1]["end_time"] = row["timestamp"]
+                segments[-1]["count"] += 1
+        return {"segments": segments, "has_more": has_more,
+                "shown_count": len(rows), "cursor_id": cursor_id}
+
+    def get_pending_segment_messages(self, chat_id: str, start_id: int,
+                                     end_id: int) -> list[dict]:
+        if not chat_id or start_id < 1 or end_id < start_id:
+            raise ValueError("无效的消息范围")
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT m.id FROM group_memory g
+                   LEFT JOIN messages m ON m.message_id=g.last_message_id
+                   WHERE g.chat_id=?""", (chat_id,),
+            ).fetchone()
+            cursor_id = (row[0] or 0) if row else 0
+            return [dict(item) for item in self.conn.execute(
+                """SELECT id, sender_name, content, timestamp FROM messages
+                   WHERE chat_id=? AND id BETWEEN ? AND ? AND id>?
+                   ORDER BY id ASC LIMIT 100""",
+                (chat_id, start_id, end_id, cursor_id),
+            ).fetchall()]
 
     def get_latest_message_row_id(self, chat_id: str) -> int | None:
         """Capture the last stored row for a startup history pass."""

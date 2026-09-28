@@ -12,6 +12,7 @@ import os
 import struct
 import threading
 import time
+import uuid
 from hashlib import sha1
 from base64 import b64encode
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -128,20 +129,6 @@ def _detect_default_data_dir() -> str:
     return ""
 
 
-_DEFAULT_FEISHU_TRIGGER_KEYWORDS = "同步到飞书,导出到飞书,写到飞书,沉淀到飞书"
-
-
-def _split_csv(raw: str) -> list[str]:
-    """Split a comma-separated env value into trimmed non-empty items."""
-    return [item.strip() for item in (raw or "").split(",") if item.strip()]
-
-
-def _bool_env(raw: str, default: bool = False) -> bool:
-    if raw == "":
-        return default
-    return raw.strip().lower() == "true"
-
-
 def _mask_key(value: str) -> str:
     """Mask a sensitive key: show first 4 + last 4 chars, or '***' if too short."""
     if not value:
@@ -163,138 +150,6 @@ def _float_env(raw: str, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return default
-
-
-def _feishu_config_from_raw(raw: dict[str, str]) -> dict:
-    """Return UI-facing Feishu export config from env key/value pairs."""
-    return {
-        "feishu_export_enabled": _bool_env(
-            raw.get("FEISHU_EXPORT_ENABLED", "false"),
-            False,
-        ),
-        "feishu_app_id": raw.get("FEISHU_APP_ID", ""),
-        "feishu_app_secret": _mask_key(raw.get("FEISHU_APP_SECRET", "")),
-        "feishu_export_mode": raw.get("FEISHU_EXPORT_MODE", "knowledge"),
-        "feishu_export_window_hours": _int_env(
-            raw.get("FEISHU_EXPORT_WINDOW_HOURS", "8"),
-            8,
-        ),
-        "feishu_auto_sync_enabled": _bool_env(
-            raw.get("FEISHU_AUTO_SYNC_ENABLED", "false"),
-            False,
-        ),
-        "feishu_auto_sync_min_messages": _int_env(
-            raw.get("FEISHU_AUTO_SYNC_MIN_MESSAGES", "20"),
-            20,
-        ),
-        "feishu_auto_sync_cooldown_sec": _int_env(
-            raw.get("FEISHU_AUTO_SYNC_COOLDOWN_SEC", "1800"),
-            1800,
-        ),
-        "feishu_knowledge_base_name": raw.get("FEISHU_KNOWLEDGE_BASE_NAME", "webot 群聊沉淀"),
-        "feishu_knowledge_folder_token": raw.get("FEISHU_KNOWLEDGE_FOLDER_TOKEN", ""),
-        "feishu_export_trigger_keywords": _split_csv(
-            raw.get("FEISHU_EXPORT_TRIGGER_KEYWORDS", _DEFAULT_FEISHU_TRIGGER_KEYWORDS)
-        ),
-        "feishu_spreadsheet_token": raw.get("FEISHU_SPREADSHEET_TOKEN", ""),
-        "feishu_spreadsheet_range": raw.get("FEISHU_SPREADSHEET_RANGE", "Sheet1!A:H"),
-        "feishu_bitable_app_token": raw.get("FEISHU_BITABLE_APP_TOKEN", ""),
-        "feishu_bitable_table_id": raw.get("FEISHU_BITABLE_TABLE_ID", ""),
-        "feishu_doc_folder_token": raw.get("FEISHU_DOC_FOLDER_TOKEN", ""),
-    }
-
-
-_DEFAULT_TODO_ADD_KEYWORDS = "记一下,添加待办,新建待办,帮我记,待办"
-_DEFAULT_TODO_COMPLETE_KEYWORDS = "搞定,做完了,完成,完成了,done"
-_DEFAULT_TODO_DELETE_KEYWORDS = "删掉,删除,取消,不要了"
-
-
-def _todo_config_from_raw(raw: dict[str, str]) -> dict:
-    """Return UI-facing todo config from env key/value pairs."""
-    return {
-        "todo_enabled": _bool_env(raw.get("TODO_ENABLED", "true"), True),
-        "todo_groups": _split_csv(raw.get("TODO_GROUPS", "*")),
-        "todo_max_per_group": _int_env(raw.get("TODO_MAX_PER_GROUP", "50"), 50),
-        "todo_completed_retention_days": _int_env(
-            raw.get("TODO_COMPLETED_RETENTION_DAYS", "30"), 30,
-        ),
-        "todo_deleted_retention_days": _int_env(
-            raw.get("TODO_DELETED_RETENTION_DAYS", "30"), 30,
-        ),
-        "todo_add_keywords": _split_csv(
-            raw.get("TODO_ADD_KEYWORDS", _DEFAULT_TODO_ADD_KEYWORDS),
-        ),
-        "todo_complete_keywords": _split_csv(
-            raw.get("TODO_COMPLETE_KEYWORDS", _DEFAULT_TODO_COMPLETE_KEYWORDS),
-        ),
-        "todo_delete_keywords": _split_csv(
-            raw.get("TODO_DELETE_KEYWORDS", _DEFAULT_TODO_DELETE_KEYWORDS),
-        ),
-    }
-
-
-def _todo_updates_from_config(config: dict) -> dict[str, str | None]:
-    """Convert todo config dict to .env lines."""
-    return {
-        "TODO_ENABLED": str(config.get("todo_enabled", True)).lower(),
-        "TODO_GROUPS": ",".join(config.get("todo_groups", ["*"])) if config.get("todo_groups") else "*",
-        "TODO_MAX_PER_GROUP": str(config.get("todo_max_per_group", 50)),
-        "TODO_COMPLETED_RETENTION_DAYS": str(config.get("todo_completed_retention_days", 30)),
-        "TODO_DELETED_RETENTION_DAYS": str(config.get("todo_deleted_retention_days", 30)),
-        "TODO_ADD_KEYWORDS": ",".join(config.get("todo_add_keywords") or []),
-        "TODO_COMPLETE_KEYWORDS": ",".join(config.get("todo_complete_keywords") or []),
-        "TODO_DELETE_KEYWORDS": ",".join(config.get("todo_delete_keywords") or []),
-    }
-
-
-def _feishu_updates_from_config(config: dict) -> dict[str, str | None]:
-    """Return env updates for Feishu export settings from UI payload."""
-    keywords = config.get("feishu_export_trigger_keywords")
-    if isinstance(keywords, list):
-        keywords_value = ",".join(str(k).strip() for k in keywords if str(k).strip())
-    else:
-        keywords_value = str(keywords).strip() if keywords is not None else None
-
-    updates: dict[str, str | None] = {}
-    field_map = {
-        "feishu_export_enabled": "FEISHU_EXPORT_ENABLED",
-        "feishu_app_id": "FEISHU_APP_ID",
-        "feishu_app_secret": "FEISHU_APP_SECRET",
-        "feishu_export_mode": "FEISHU_EXPORT_MODE",
-        "feishu_export_window_hours": "FEISHU_EXPORT_WINDOW_HOURS",
-        "feishu_auto_sync_enabled": "FEISHU_AUTO_SYNC_ENABLED",
-        "feishu_auto_sync_min_messages": "FEISHU_AUTO_SYNC_MIN_MESSAGES",
-        "feishu_auto_sync_cooldown_sec": "FEISHU_AUTO_SYNC_COOLDOWN_SEC",
-        "feishu_knowledge_base_name": "FEISHU_KNOWLEDGE_BASE_NAME",
-        "feishu_knowledge_folder_token": "FEISHU_KNOWLEDGE_FOLDER_TOKEN",
-        "feishu_export_trigger_keywords": "FEISHU_EXPORT_TRIGGER_KEYWORDS",
-        "feishu_spreadsheet_token": "FEISHU_SPREADSHEET_TOKEN",
-        "feishu_spreadsheet_range": "FEISHU_SPREADSHEET_RANGE",
-        "feishu_bitable_app_token": "FEISHU_BITABLE_APP_TOKEN",
-        "feishu_bitable_table_id": "FEISHU_BITABLE_TABLE_ID",
-        "feishu_doc_folder_token": "FEISHU_DOC_FOLDER_TOKEN",
-    }
-    for field, env_key in field_map.items():
-        if field not in config:
-            continue
-        if field in ("feishu_export_enabled", "feishu_auto_sync_enabled"):
-            updates[env_key] = str(config.get(field, False)).lower()
-        elif field in (
-            "feishu_export_window_hours",
-            "feishu_auto_sync_min_messages",
-            "feishu_auto_sync_cooldown_sec",
-        ):
-            default = {
-                "feishu_export_window_hours": 8,
-                "feishu_auto_sync_min_messages": 20,
-                "feishu_auto_sync_cooldown_sec": 1800,
-            }[field]
-            updates[env_key] = str(config.get(field, default))
-        elif field == "feishu_export_trigger_keywords":
-            updates[env_key] = keywords_value
-        else:
-            updates[env_key] = config.get(field)
-    return updates
 
 
 def _detect_wxid_and_db_path():
@@ -850,6 +705,48 @@ _env_write_lock = threading.Lock()  # serialize all .env writes across threads
 _server_guard = _ServerStartGuard()
 _shutdown_event = threading.Event()
 _voice_downloads: dict[str, dict] = {}  # model → {active, msg}
+_memory_runtime = None
+_memory_runtime_lock = threading.Lock()
+_memory_jobs: dict[str, dict] = {}
+_memory_jobs_lock = threading.Lock()
+
+
+def _register_memory_runtime(consolidator):
+    global _memory_runtime
+    with _memory_runtime_lock:
+        _memory_runtime = consolidator
+
+
+def _clear_memory_runtime():
+    global _memory_runtime
+    with _memory_runtime_lock:
+        _memory_runtime = None
+
+
+def _memory_worker(chat_id: str, end_id: int, job_id: str):
+    conn = None
+    try:
+        with _memory_runtime_lock:
+            worker = _memory_runtime
+        if worker is None:
+            from src.config import load_config
+            from src.summarize import create_summarizer
+            from src.memory.consolidator import MemoryConsolidator
+            conn, store = _failure_store()
+            worker = MemoryConsolidator(store, create_summarizer(load_config()))
+        success = worker.consolidate_first_pending_segment(chat_id, end_id)
+        with _memory_jobs_lock:
+            _memory_jobs[job_id] = {
+                "state": "done" if success else "failed",
+                "error": "整理失败或正在进行，请查看运行日志后重试" if not success else "",
+            }
+    except Exception as exc:
+        logger.exception("Manual memory consolidation failed")
+        with _memory_jobs_lock:
+            _memory_jobs[job_id] = {"state": "failed", "error": str(exc)}
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def signal_shutdown():
@@ -906,6 +803,7 @@ def _bot_exited():
     Called from desktop.py's start_bot() and _start_bot_in_thread().
     """
     _bot_control.mark_stopped()
+    _clear_memory_runtime()
 
 
 def _register_backend(backend):
@@ -916,6 +814,7 @@ def _register_backend(backend):
 def _stop_bot():
     """Stop the running bot backend. Returns True if anything was stopped."""
     stopped = _bot_control.stop()
+    _clear_memory_runtime()
     update_status(running=False)
     if stopped:
         logger.info("Bot stopped via web API")
@@ -955,6 +854,7 @@ def _start_bot_in_thread():
             # Always clear the running flag so the user can restart
             # (bot.run() exits gracefully on errors like KEY_MISSING)
             _bot_control.mark_stopped()
+            _clear_memory_runtime()
 
     thread = threading.Thread(target=_run, daemon=True, name="bot-main")
     thread.start()
@@ -1069,14 +969,14 @@ class _UIHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         # Only delegate specific API paths; return 405 for unknown POST paths
         if self.path in ("/api/config", "/api/config/import", "/api/prompts", "/api/start", "/api/stop",
+                         "/api/memory/save", "/api/memory/consolidate",
                          "/api/nicknames",
                          "/api/welcome/templates",
                          "/api/onboarding/reset",
                          "/api/onboarding/step1", "/api/onboarding/step2",
                          "/api/onboarding/step3", "/api/onboarding/step4",
                          "/api/sandbox/test",
-                         "/api/lots",
-                         "/api/todos/action", "/api/send-failures/retry",
+                         "/api/send-failures/retry",
                          "/api/voice/download-model",
                          "/api/wechat-data-dir/detect"):
             self.do_GET()
@@ -1090,6 +990,115 @@ class _UIHandler(SimpleHTTPRequestHandler):
         self._handle_request()
 
     def _handle_request(self):
+        parsed_path = _urlparse(self.path)
+        if parsed_path.path.startswith("/api/memory"):
+            origin = self.headers.get("Origin", "")
+            if (self.client_address[0] not in ("127.0.0.1", "::1")
+                    or (origin and _urlparse(origin).hostname not in
+                        ("127.0.0.1", "localhost", "::1"))):
+                self.send_json({"ok": False, "error": "Local request required"})
+                return
+            query = _parse_qs(parsed_path.query)
+            conn = None
+            try:
+                if parsed_path.path == "/api/memory/jobs":
+                    job_id = query.get("id", [""])[0]
+                    with _memory_jobs_lock:
+                        job = _memory_jobs.get(job_id)
+                    self.send_json({"ok": job is not None, "job": job})
+                    return
+                if parsed_path.path in ("/api/memory/save", "/api/memory/consolidate"):
+                    if self.command != "POST":
+                        raise ValueError("POST required")
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 40000:
+                        raise ValueError("请求大小无效")
+                    payload = json.loads(self.rfile.read(length))
+                    chat_id = str(payload.get("chat_id", "")).strip()
+                    if not chat_id or len(chat_id) > 256:
+                        raise ValueError("群 ID 无效")
+                    if parsed_path.path == "/api/memory/save":
+                        text_value = payload.get("text", "")
+                        if not isinstance(text_value, str):
+                            raise ValueError("soul.md 必须是文本")
+                        with _memory_jobs_lock:
+                            if any(job.get("chat_id") == chat_id and job["state"] == "running"
+                                   for job in _memory_jobs.values()):
+                                raise RuntimeError("该群正在手动整理记忆，请稍后再保存")
+                            with _memory_runtime_lock:
+                                runtime = _memory_runtime
+                            if runtime is not None:
+                                runtime.save_manual_text(chat_id, text_value)
+                            else:
+                                from src.memory.consolidator import MemoryConsolidator
+                                conn, store = _failure_store()
+                                MemoryConsolidator(store, None).save_manual_text(chat_id, text_value)
+                        self.send_json({"ok": True})
+                        return
+                    end_id = int(payload.get("end_id", 0))
+                    conn, store = _failure_store()
+                    segments = store.list_pending_memory_segments(chat_id)["segments"]
+                    if not segments or segments[0]["end_id"] != end_id:
+                        raise ValueError("请先选择最早的待整理时间段，或刷新列表")
+                    job_id = uuid.uuid4().hex
+                    with _memory_jobs_lock:
+                        if any(job.get("chat_id") == chat_id and job["state"] == "running"
+                               for job in _memory_jobs.values()):
+                            raise RuntimeError("该群已有手动整理任务，请等待完成")
+                        _memory_jobs[job_id] = {"state": "running", "error": "", "chat_id": chat_id}
+                        if len(_memory_jobs) > 100:
+                            for key in list(_memory_jobs)[:50]:
+                                if _memory_jobs[key]["state"] != "running":
+                                    del _memory_jobs[key]
+                    threading.Thread(target=_memory_worker,
+                                     args=(chat_id, end_id, job_id), daemon=True).start()
+                    self.send_json({"ok": True, "job_id": job_id})
+                    return
+                if self.command != "GET":
+                    raise ValueError("GET required")
+                conn, store = _failure_store()
+                if parsed_path.path == "/api/memory/groups":
+                    from src.config import PROJECT_ROOT
+                    names_path = PROJECT_ROOT / "data" / "group_names.json"
+                    names = json.loads(names_path.read_text(encoding="utf-8")) if names_path.exists() else {}
+                    rows = conn.execute(
+                        "SELECT chat_id FROM messages UNION SELECT chat_id FROM group_memory ORDER BY chat_id"
+                    ).fetchall()
+                    groups = []
+                    for row in rows:
+                        chat_id = row[0]
+                        info = names.get(chat_id, chat_id)
+                        label = info.get("name", chat_id) if isinstance(info, dict) else str(info)
+                        groups.append({"chat_id": chat_id, "group_name": label})
+                    self.send_json({"ok": True, "groups": groups})
+                    return
+                chat_id = query.get("chat_id", [""])[0]
+                if not chat_id:
+                    raise ValueError("群 ID 不能为空")
+                if parsed_path.path == "/api/memory/segment":
+                    start_id = int(query.get("start_id", ["0"])[0])
+                    end_id = int(query.get("end_id", ["0"])[0])
+                    self.send_json({"ok": True, "messages":
+                                    store.get_pending_segment_messages(chat_id, start_id, end_id)})
+                    return
+                if parsed_path.path == "/api/memory":
+                    memory = store.get_group_memory(chat_id)
+                    pending = store.list_pending_memory_segments(chat_id)
+                    path = store._soul_path(chat_id)
+                    self.send_json({"ok": True, "memory": memory,
+                                    "pending": pending, "soul_path": str(path) if path else ""})
+                    return
+                raise ValueError("Unknown memory endpoint")
+            except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+                self.send_json({"ok": False, "error": str(exc)})
+            except Exception:
+                logger.exception("Memory API failed")
+                self.send_json({"ok": False, "error": "记忆操作失败，请查看日志"})
+            finally:
+                if conn is not None:
+                    conn.close()
+            return
+
         if self.path == "/api/send-failures/retry":
             if self.command != "POST":
                 self.send_json({"ok": False, "error": "POST required"})
@@ -1252,7 +1261,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 "bot_display_name": raw.get("BOT_DISPLAY_NAME", ""),
                 "wechat_backend": raw.get("WECHAT_BACKEND", "wcdb"),
                 "wechat_groups": _decode_wechat_groups(raw.get("WECHAT_GROUPS", "*")),
-                "fun_enabled": raw.get("FUN_ENABLED", "true").lower() == "true",
                 "proactive_enabled": raw.get("PROACTIVE_ENABLED", "false").lower() == "true",
                 "proactive_rate_window_sec": _int_env(raw.get("PROACTIVE_RATE_WINDOW_SEC", "120"), 120),
                 "proactive_rate_quiet": _float_env(raw.get("PROACTIVE_RATE_QUIET", "1.5"), 1.5),
@@ -1277,8 +1285,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 "voice_openai_base_url": raw.get("VOICE_OPENAI_BASE_URL", ""),
                 "voice_local_model": raw.get("VOICE_LOCAL_MODEL", "small"),
             }
-            config_data.update(_feishu_config_from_raw(raw))
-            config_data.update(_todo_config_from_raw(raw))
             self.send_json({
                 "ok": True,
                 "config": config_data,
@@ -1319,8 +1325,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "bot_display_name": raw.get("BOT_DISPLAY_NAME", ""),
                     "wechat_backend": raw.get("WECHAT_BACKEND", "wcdb"),
                     "wechat_groups": raw.get("WECHAT_GROUPS", "*"),
-                    "fun_enabled": raw.get("FUN_ENABLED", "true").lower() == "true",
-                    "proactive_enabled": raw.get("PROACTIVE_ENABLED", "false").lower() == "true",
+                        "proactive_enabled": raw.get("PROACTIVE_ENABLED", "false").lower() == "true",
                     "proactive_rate_window_sec": _int_env(raw.get("PROACTIVE_RATE_WINDOW_SEC", "120"), 120),
                     "proactive_rate_quiet": _float_env(raw.get("PROACTIVE_RATE_QUIET", "1.5"), 1.5),
                     "proactive_rate_casual": _float_env(raw.get("PROACTIVE_RATE_CASUAL", "4.0"), 4.0),
@@ -1338,7 +1343,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "log_level": raw.get("LOG_LEVEL", "INFO"),
                     "wechat_data_dir": raw.get("WECHAT_DATA_DIR", ""),
                 }
-                export_data.update(_feishu_config_from_raw(raw))
                 filename = f"webot-config-{_dt_date.today().isoformat()}.json"
                 body = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
                 self.send_response(200)
@@ -1382,7 +1386,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "BOT_DISPLAY_NAME": config.get("bot_display_name"),
                     "WECHAT_BACKEND": config.get("wechat_backend"),
                     "WECHAT_GROUPS": config.get("wechat_groups") or "*",
-                    "FUN_ENABLED": str(config.get("fun_enabled", True)).lower(),
                     "PROACTIVE_ENABLED": str(config.get("proactive_enabled", False)).lower(),
                     "PROACTIVE_RATE_WINDOW_SEC": str(config.get("proactive_rate_window_sec", 120)),
                     "PROACTIVE_RATE_QUIET": str(config.get("proactive_rate_quiet", 1.5)),
@@ -1404,15 +1407,13 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "VOICE_OPENAI_BASE_URL": config.get("voice_openai_base_url", ""),
                     "VOICE_LOCAL_MODEL": config.get("voice_local_model", "small"),
                 }
-                updates.update(_feishu_updates_from_config(config))
-                updates.update(_todo_updates_from_config(config))
                 updates = _submitted_config_updates(config, updates)
                 # ── Safety: never overwrite real secrets with masked values.
                 #     load-config returns masked keys (e.g. "sk-r***t-k"); the
                 #     frontend sends them back unchanged.  Writing a masked
                 #     string to .env permanently destroys the real secret.
                 for masked_key in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "CUSTOM_API_KEY",
-                                   "ANTHROPIC_API_KEY", "FEISHU_APP_SECRET",
+                                   "ANTHROPIC_API_KEY",
                                    "VOICE_OPENAI_API_KEY"):
                     val = updates.get(masked_key)
                     if isinstance(val, str) and "***" in val:
@@ -1464,7 +1465,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "BOT_DISPLAY_NAME": config.get("bot_display_name"),
                     "WECHAT_BACKEND": config.get("wechat_backend"),
                     "WECHAT_GROUPS": config.get("wechat_groups") or "*",
-                    "FUN_ENABLED": str(config.get("fun_enabled", True)).lower(),
                     "PROACTIVE_ENABLED": str(config.get("proactive_enabled", False)).lower(),
                     "PROACTIVE_RATE_WINDOW_SEC": str(config.get("proactive_rate_window_sec", 120)),
                     "PROACTIVE_RATE_QUIET": str(config.get("proactive_rate_quiet", 1.5)),
@@ -1489,7 +1489,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 # Older exports omit newer fields. Do not reset those settings.
                 updates = {key: value for key, value in updates.items()
                            if key.lower() in config}
-                updates.update(_feishu_updates_from_config(config))
                 saved_keys = _update_env(env_path, updates)
                 # Update in-process environment
                 for key in saved_keys:
@@ -1692,146 +1691,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True})
             except Exception as e:
                 logger.exception("Failed to save nickname")
-                self.send_json({"ok": False, "error": str(e)})
-            return
-
-        # ── API: Get / Save lots config ───────────────────────────────
-        if self.path == "/api/lots":
-            if self.command == "GET":
-                try:
-                    from src.fun import load_lots_config
-                    config = load_lots_config()
-                    self.send_json({"ok": True, "config": config})
-                except Exception as e:
-                    logger.exception("Failed to load lots config")
-                    self.send_json({"ok": False, "error": str(e)})
-            else:
-                # POST — save custom lots config
-                content_len = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(content_len) if content_len else b"{}"
-                try:
-                    data = json.loads(body)
-                    from src.fun import save_lots_config
-                    save_lots_config(data)
-                    self.send_json({"ok": True})
-                except ValueError as e:
-                    self.send_json({"ok": False, "error": str(e)})
-                except Exception as e:
-                    logger.exception("Failed to save lots config")
-                    self.send_json({"ok": False, "error": str(e)})
-            return
-
-        # ── API: Todo management ───────────────────────────────────────
-        if self.path == "/api/todos" or self.path.startswith("/api/todos?"):
-            params = {}
-            if "?" in self.path:
-                from urllib.parse import urlparse, parse_qs
-                parsed = urlparse(self.path)
-                for k, v in parse_qs(parsed.query).items():
-                    params[k] = v[0] if v else ""
-            status = params.get("status", "active")
-            chat_id = params.get("chat_id", "")
-            search = params.get("search", "")
-            try:
-                from src.todo.store import TodoStore
-                from src.config import find_env_file
-                db_path = "data/messages.db"
-                env_path = find_env_file()
-                if env_path and env_path.exists():
-                    for line in env_path.read_text(encoding="utf-8").splitlines():
-                        if line.strip().startswith("DB_PATH="):
-                            db_path = line.strip().split("=", 1)[1].strip()
-                            break
-                store = TodoStore(db_path)
-                items = store.get_all(status=status, chat_id=chat_id, search=search)
-                groups = store.get_active_groups()
-                self.send_json({
-                    "ok": True,
-                    "items": [
-                        {
-                            "id": item.id,
-                            "chat_id": item.chat_id,
-                            "content": item.content,
-                            "display_order": item.display_order,
-                            "status": item.status,
-                            "creator_name": item.creator_name,
-                            "created_at": item.created_at,
-                            "completed_by_name": item.completed_by_name,
-                            "completed_at": item.completed_at,
-                            "deleted_by_name": item.deleted_by_name,
-                            "deleted_at": item.deleted_at,
-                        }
-                        for item in items
-                    ],
-                    "groups": groups,
-                })
-            except Exception as e:
-                logger.exception("Failed to load todos")
-                self.send_json({"ok": False, "error": str(e)})
-            return
-
-        # ── API: Get todo counts per status ─────────────────────────────
-        if self.path.startswith("/api/todos/counts"):
-            chat_id = ""
-            if "?" in self.path:
-                from urllib.parse import urlparse, parse_qs
-                parsed = urlparse(self.path)
-                params = {k: v[0] if v else "" for k, v in parse_qs(parsed.query).items()}
-                chat_id = params.get("chat_id", "")
-            try:
-                from src.todo.store import TodoStore
-                from src.config import find_env_file
-                db_path = "data/messages.db"
-                env_path = find_env_file()
-                if env_path and env_path.exists():
-                    for line in env_path.read_text(encoding="utf-8").splitlines():
-                        if line.strip().startswith("DB_PATH="):
-                            db_path = line.strip().split("=", 1)[1].strip()
-                            break
-                store = TodoStore(db_path)
-                counts = store.get_counts(chat_id=chat_id)
-                self.send_json({"ok": True, "counts": counts})
-            except Exception as e:
-                logger.exception("Failed to load todo counts")
-                self.send_json({"ok": False, "error": str(e)})
-            return
-
-        if self.path == "/api/todos/action":
-            content_len = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_len) if content_len else b"{}"
-            try:
-                data = json.loads(body)
-                action = data.get("action", "")
-                chat_id = data.get("chat_id", "")
-                target = data.get("target", "")
-                from src.todo.store import TodoStore
-                from src.config import find_env_file
-                db_path = "data/messages.db"
-                env_path = find_env_file()
-                if env_path and env_path.exists():
-                    for line in env_path.read_text(encoding="utf-8").splitlines():
-                        if line.strip().startswith("DB_PATH="):
-                            db_path = line.strip().split("=", 1)[1].strip()
-                            break
-                store = TodoStore(db_path)
-                if action == "complete":
-                    result = store.complete(chat_id, target)
-                elif action == "delete":
-                    result = store.delete(chat_id, target)
-                elif action == "restore":
-                    result = store.restore(chat_id, target)
-                elif action == "clear_completed":
-                    result = store.clear_completed(chat_id)
-                elif action == "clear_deleted":
-                    result = store.clear_deleted(chat_id)
-                else:
-                    self.send_json({"ok": False, "error": f"Unknown action: {action}"})
-                    return
-                self.send_json({"ok": result.ok, "reply": result.reply})
-                # 触发自动清理
-                store.cleanup(chat_id)
-            except Exception as e:
-                logger.exception("Todo action failed")
                 self.send_json({"ok": False, "error": str(e)})
             return
 
@@ -2178,7 +2037,6 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 data = json.loads(body)
                 with _onboarding_lock:
                     _onboarding_data["step4_done"] = True
-                    _onboarding_data["fun_enabled"] = data.get("fun_enabled", True)
                     _onboarding_data["proactive_enabled"] = data.get("proactive_enabled", False)
                     _onboarding_data["sticky_mention_enabled"] = data.get("sticky_mention_enabled", True)
 

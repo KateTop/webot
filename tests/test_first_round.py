@@ -11,7 +11,7 @@ from src.db.store import MessageStore
 from src.router import MessageRouter
 from src.summarize.openai_backend import OpenAISummarizer
 from src.summarize import prompt_settings
-from src.web.server import _submitted_config_updates, _todo_updates_from_config, _update_env
+from src.web.server import _submitted_config_updates, _update_env
 
 
 def test_env_updates_preserve_secrets_and_concurrent_changes(tmp_path):
@@ -53,18 +53,10 @@ def test_partial_settings_save_preserves_other_sections(tmp_path):
     ]
 
 
-def test_empty_todo_keywords_can_be_saved():
-    updates = _submitted_config_updates(
-        {"todo_add_keywords": []},
-        _todo_updates_from_config({"todo_add_keywords": []}),
-    )
-    assert updates == {"TODO_ADD_KEYWORDS": ""}
-
-
 def test_prompt_settings_persist_and_validate(tmp_path):
     with patch.object(prompt_settings, "PROMPT_FILE", tmp_path / "prompts.json"):
         assert prompt_settings.save_prompt_settings({"chat": "回答简短", "summary": "列出待办"}) == {
-            "chat": "回答简短", "summary": "列出待办"}
+            "chat": "回答简短", "summary": "列出待办", "memory": ""}
         assert prompt_settings.load_prompt_settings()["chat"] == "回答简短"
         assert "回答简短" in prompt_settings.with_user_instructions("默认", "chat")
         with pytest.raises(ValueError):
