@@ -720,6 +720,28 @@ class WeChatWindowController:
     # ── Internals ─────────────────────────────────────────────────
 
     @staticmethod
+    def _focus_chat_editor(hwnd: int) -> bool:
+        """Focus the lower-right Qt chat editor before starting a native @."""
+        try:
+            left, top, right, bottom = win32gui.GetClientRect(hwnd)
+            width, height = right - left, bottom - top
+            if width < 350 or height < 350:
+                return False
+            point = win32gui.ClientToScreen(hwnd, (int(width * 0.7), height - 90))
+            cursor = win32api.GetCursorPos()
+            try:
+                win32api.SetCursorPos(point)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+            finally:
+                win32api.SetCursorPos(cursor)
+            time.sleep(0.1)
+            return WeChatWindowController._foreground_matches(hwnd)
+        except Exception as exc:
+            logger.warning("Native @ editor focus unavailable: %s", type(exc).__name__)
+            return False
+
+    @staticmethod
     def _mention_window_handles(hwnd: int) -> set[int] | None:
         """Snapshot visible WeChat windows before opening the @ picker."""
         try:
@@ -780,6 +802,46 @@ class WeChatWindowController:
             logger.warning("Native @ selection unavailable: %s", type(exc).__name__)
             return False
 
+    @staticmethod
+    def _mention_picker_open(hwnd: int, existing_handles: set[int]) -> bool:
+        """Check whether typing @ opened a new Qt picker before entering a name."""
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            handles: list[int] = []
+            win32gui.EnumWindows(lambda candidate, out: out.append(candidate), handles)
+            return any(
+                candidate not in existing_handles
+                and win32gui.IsWindowVisible(candidate)
+                and win32process.GetWindowThreadProcessId(candidate)[1] == pid
+                and "ToolSaveBits" in win32gui.GetClassName(candidate)
+                for candidate in handles
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _verify_mention_draft(hwnd: int, label: str, body: str) -> bool:
+        """Check the composer text before Enter; never log or return the draft."""
+        if not WeChatWindowController._foreground_matches(hwnd):
+            return False
+        try:
+            WeChatWindowController._set_clipboard("\u2060")
+            send_combo(0x11, 0x41)  # select composer text
+            send_combo(0x11, 0x43)  # copy; keep all text selected
+            time.sleep(0.1)
+            win32clipboard.OpenClipboard()
+            try:
+                copied = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+            finally:
+                win32clipboard.CloseClipboard()
+            valid = copied.startswith("@" + label) and copied.endswith(body)
+            if valid:
+                press_key(0x27)  # collapse selection at the end before Enter
+            return valid
+        except Exception as exc:
+            logger.warning("Native @ draft check unavailable: %s", type(exc).__name__)
+            return False
+
     def send_message(self, hwnd: int, text: str,
                      mention: tuple[str, str] | None = None,
                      chat_id: str = "") -> bool:
@@ -824,13 +886,24 @@ class WeChatWindowController:
                     or not self._mention_member_is_unique(chat_id, recipient_id, label)):
                 logger.error("Native @ recipient name cannot be uniquely verified; refusing to send")
                 return False
+            body = text[len(prefix):]
+            if not body:
+                logger.error("Native @ reply has no body; refusing to send")
+                return False
+            if not self._focus_chat_editor(hwnd):
+                logger.error("Native @ editor could not be focused; refusing to send")
+                return False
             existing_windows = self._mention_window_handles(hwnd)
             if existing_windows is None:
                 logger.error("Native @ window inventory unavailable; refusing to send")
                 return False
             send_combo(0x10, 0x32)  # Shift+2: type @ to open WeChat's member picker
+            time.sleep(0.2)
+            if not self._mention_picker_open(hwnd, existing_windows):
+                logger.error("Native @ picker did not open after @; message unsent")
+                return False
             try:
-                type_unicode(label)  # Pasting or typing a space closes this Qt picker.
+                type_unicode(label, delay=0.1)  # Pasting or typing a space closes this Qt picker.
             except OSError:
                 logger.error("Native @ keyboard input failed; message unsent")
                 return False
@@ -841,10 +914,7 @@ class WeChatWindowController:
                 # the member picker. Leave the window and draft untouched.
                 logger.error("Native @ could not be verified; window left open and message unsent")
                 return False
-            text = text[len(prefix):]
-            if not text:
-                logger.error("Native @ reply has no body; refusing to send")
-                return False
+            text = body
 
         # Set clipboard and paste
         self._set_clipboard(text)
@@ -867,6 +937,10 @@ class WeChatWindowController:
 
         send_combo(0x11, 0x56)  # Ctrl+V
         time.sleep(self.PASTE_SEND_DELAY)
+
+        if mention and not self._verify_mention_draft(hwnd, label, text):
+            logger.error("Native @ draft does not match intended reply; message unsent")
+            return False
 
         if not self._foreground_matches(hwnd):
             logger.warning(

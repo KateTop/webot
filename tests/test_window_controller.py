@@ -145,7 +145,9 @@ class WeChatWindowControllerTests(unittest.TestCase):
         with (
             patch.object(controller, "_validate_hwnd", return_value=True),
             patch.object(controller, "_foreground_matches", return_value=True),
+            patch.object(controller, "_focus_chat_editor", return_value=True),
             patch.object(controller, "_mention_window_handles", return_value={12345}),
+            patch.object(controller, "_mention_picker_open", return_value=True),
             patch.object(controller, "_mention_member_is_unique", return_value=True),
             patch.object(controller, "_select_mention_candidate", return_value=False),
             patch("src.wechat.window_controller.type_unicode"),
@@ -165,9 +167,12 @@ class WeChatWindowControllerTests(unittest.TestCase):
         with (
             patch.object(controller, "_validate_hwnd", return_value=True),
             patch.object(controller, "_foreground_matches", return_value=True),
+            patch.object(controller, "_focus_chat_editor", return_value=True),
             patch.object(controller, "_mention_window_handles", return_value={12345}),
+            patch.object(controller, "_mention_picker_open", return_value=True),
             patch.object(controller, "_mention_member_is_unique", return_value=True),
             patch.object(controller, "_select_mention_candidate", return_value=True) as picker,
+            patch.object(controller, "_verify_mention_draft", return_value=True) as verify,
             patch("src.wechat.window_controller.type_unicode") as typed,
             patch.object(controller, "_set_clipboard", side_effect=clipboard.append),
             patch("src.wechat.window_controller.send_combo") as send_combo,
@@ -177,7 +182,8 @@ class WeChatWindowControllerTests(unittest.TestCase):
             self.assertTrue(controller.send_message(
                 12345, "@Alice 你好", mention=("@Alice ", "wxid_alice")))
             picker.assert_called_once_with(12345, {12345})
-            typed.assert_called_once_with("Alice")
+            typed.assert_called_once_with("Alice", delay=0.1)
+            verify.assert_called_once_with(12345, "Alice", "你好")
             self.assertEqual(clipboard, ["你好"])
             self.assertIn((0x10, 0x32), [call.args for call in send_combo.call_args_list])
             self.assertIn(0x0D, [call.args[0] for call in press_key.call_args_list])
@@ -196,6 +202,80 @@ class WeChatWindowControllerTests(unittest.TestCase):
             windows.assert_not_called()
             combo.assert_not_called()
             key.assert_not_called()
+
+    def test_native_mention_picker_must_open_before_typing_name(self):
+        controller = WeChatWindowController()
+        with (
+            patch.object(controller, "_validate_hwnd", return_value=True),
+            patch.object(controller, "_foreground_matches", return_value=True),
+            patch.object(controller, "_mention_member_is_unique", return_value=True),
+            patch.object(controller, "_focus_chat_editor", return_value=True),
+            patch.object(controller, "_mention_window_handles", return_value={12345}),
+            patch.object(controller, "_mention_picker_open", return_value=False),
+            patch("src.wechat.window_controller.type_unicode") as typed,
+            patch("src.wechat.window_controller.press_key") as key,
+            patch("src.wechat.window_controller.send_combo"),
+            patch("src.wechat.window_controller.time.sleep"),
+        ):
+            self.assertFalse(controller.send_message(
+                12345, "@Alice 你好", mention=("@Alice ", "wxid_alice")))
+            typed.assert_not_called()
+            key.assert_not_called()
+
+    def test_native_mention_draft_mismatch_never_sends(self):
+        controller = WeChatWindowController()
+        with (
+            patch.object(controller, "_validate_hwnd", return_value=True),
+            patch.object(controller, "_foreground_matches", return_value=True),
+            patch.object(controller, "_mention_member_is_unique", return_value=True),
+            patch.object(controller, "_focus_chat_editor", return_value=True),
+            patch.object(controller, "_mention_window_handles", return_value={12345}),
+            patch.object(controller, "_mention_picker_open", return_value=True),
+            patch.object(controller, "_select_mention_candidate", return_value=True),
+            patch.object(controller, "_verify_mention_draft", return_value=False),
+            patch.object(controller, "_set_clipboard"),
+            patch("src.wechat.window_controller.type_unicode"),
+            patch("src.wechat.window_controller.press_key") as key,
+            patch("src.wechat.window_controller.send_combo"),
+            patch("src.wechat.window_controller.time.sleep"),
+        ):
+            self.assertFalse(controller.send_message(
+                12345, "@Alice 你好", mention=("@Alice ", "wxid_alice")))
+            self.assertNotIn(0x0D, [call.args[0] for call in key.call_args_list])
+
+    def test_native_mention_draft_check_requires_body_after_mention(self):
+        with (
+            patch.object(WeChatWindowController, "_foreground_matches", return_value=True),
+            patch.object(WeChatWindowController, "_set_clipboard"),
+            patch("src.wechat.window_controller.send_combo"),
+            patch("src.wechat.window_controller.press_key") as key,
+            patch("src.wechat.window_controller.win32clipboard.OpenClipboard"),
+            patch("src.wechat.window_controller.win32clipboard.CloseClipboard"),
+            patch("src.wechat.window_controller.win32clipboard.GetClipboardData",
+                  side_effect=["@Alice 你好", "@Alice"]),
+            patch("src.wechat.window_controller.time.sleep"),
+        ):
+            self.assertTrue(WeChatWindowController._verify_mention_draft(123, "Alice", "你好"))
+            self.assertFalse(WeChatWindowController._verify_mention_draft(123, "Alice", "你好"))
+            key.assert_called_once_with(0x27)
+
+    def test_native_mention_focuses_editor_area(self):
+        with (
+            patch("src.wechat.window_controller.win32gui.GetClientRect",
+                  return_value=(0, 0, 860, 720)),
+            patch("src.wechat.window_controller.win32gui.ClientToScreen",
+                  return_value=(600, 630)) as screen,
+            patch("src.wechat.window_controller.win32api.GetCursorPos",
+                  return_value=(20, 30)),
+            patch("src.wechat.window_controller.win32api.SetCursorPos") as cursor,
+            patch("src.wechat.window_controller.win32api.mouse_event") as click,
+            patch.object(WeChatWindowController, "_foreground_matches", return_value=True),
+            patch("src.wechat.window_controller.time.sleep"),
+        ):
+            self.assertTrue(WeChatWindowController._focus_chat_editor(123))
+            screen.assert_called_once_with(123, (602, 630))
+            self.assertEqual(click.call_count, 2)
+            self.assertEqual(cursor.call_args.args, ((20, 30),))
 
     def test_native_mention_requires_unique_member_id(self):
         controller = WeChatWindowController()
