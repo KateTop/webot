@@ -631,6 +631,16 @@ class _BotControl:
                 self.backend = backend
             self.running = True
 
+    def try_start(self, thread) -> bool:
+        """Reserve the bot slot before launching its thread."""
+        with self._lock:
+            if self.running:
+                return False
+            self.thread = thread
+            self.backend = None
+            self.running = True
+            return True
+
     def register_backend(self, backend):
         """Called by Bot.run() during initialization."""
         with self._lock:
@@ -650,10 +660,17 @@ class _BotControl:
         if thread is not None and thread.is_alive():
             thread.join(timeout=30)
 
+        if thread is not None and thread.is_alive():
+            # A callback may still be draining. Keep the backend registered
+            # so /api/start cannot overlap a second poller with this one.
+            logger.warning("Bot thread is still stopping after 30s")
+            return False
+
         with self._lock:
-            self.running = False
-            self.backend = None
-            self.thread = None
+            if self.backend is backend and self.thread is thread:
+                self.running = False
+                self.backend = None
+                self.thread = None
         return backend is not None
 
     def is_running(self):
@@ -814,8 +831,10 @@ def _register_backend(backend):
 def _stop_bot():
     """Stop the running bot backend. Returns True if anything was stopped."""
     stopped = _bot_control.stop()
-    _clear_memory_runtime()
-    update_status(running=False)
+    still_running = _bot_control.is_running()
+    if not still_running:
+        _clear_memory_runtime()
+    update_status(running=still_running)
     if stopped:
         logger.info("Bot stopped via web API")
     return stopped
@@ -823,9 +842,6 @@ def _stop_bot():
 
 def _start_bot_in_thread():
     """Start the bot in a new daemon thread. Call from API handler."""
-    if _bot_control.is_running():
-        return {"ok": False, "error": "Bot is already running"}
-
     import sys
     from src.config import PROJECT_ROOT
 
@@ -857,10 +873,15 @@ def _start_bot_in_thread():
             _clear_memory_runtime()
 
     thread = threading.Thread(target=_run, daemon=True, name="bot-main")
-    thread.start()
-    _bot_control.set_thread(thread)
-    _bot_control.set_running()
+    if not _bot_control.try_start(thread):
+        return {"ok": False, "error": "Bot is already running"}
     update_status(running=True)
+    try:
+        thread.start()
+    except RuntimeError as exc:
+        _bot_control.mark_stopped()
+        update_status(running=False, error=str(exc))
+        return {"ok": False, "error": str(exc)}
     return {"ok": True}
 
 

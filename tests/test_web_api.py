@@ -938,7 +938,7 @@ class BotControlTests(unittest.TestCase):
         """stop() calls backend.stop() and thread.join()."""
         fake_backend = MagicMock()
         fake_thread = MagicMock()
-        fake_thread.is_alive.return_value = True
+        fake_thread.is_alive.side_effect = [True, False]
         self.control.register(backend=fake_backend, thread=fake_thread)
         self.control.stop()
         fake_backend.stop.assert_called_once()

@@ -232,8 +232,8 @@ class WcdbBackend(AbstractWeChatBackend):
     def stop(self) -> None:
         self._stop_requested = True
         self._running = False
-        if self._pool:
-            self._pool.shutdown(wait=False)
+        # The polling thread owns the executor and shuts it down in start()'s
+        # finally block. Closing it here races with _poll_group.submit().
 
     def _backfill_group(self, group_name: str, talker: str) -> int:
         if self._store is None or self._client is None:
@@ -526,16 +526,23 @@ class WcdbBackend(AbstractWeChatBackend):
 
             # Fire-and-forget: callback (potentially AI call) + send run in
             # a thread pool worker so the poll loop continues immediately.
-            if self._pool:
-                self._pool.submit(
+            pool = self._pool
+            if not self._running or pool is None:
+                return
+            try:
+                pool.submit(
                     self._handle_message,
                     group_name, talker, standardized, callback,
                 )
-            else:
-                # Fallback (pool already shut down): run inline
-                self._handle_message(
-                    group_name, talker, standardized, callback,
-                )
+            except RuntimeError as exc:
+                # Interpreter shutdown can invalidate the executor even
+                # though the poll flag has not yet been cleared.
+                if "cannot schedule new futures after" not in str(exc):
+                    raise
+                logger.info("Callback executor closed; stopping WCDB poll")
+                self._stop_requested = True
+                self._running = False
+                return
 
     def _handle_message(self, group_name: str, talker: str,
                         standardized: dict, callback: MessageCallback) -> None:
