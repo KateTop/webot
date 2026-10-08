@@ -118,6 +118,9 @@ def test_direct_reply_carries_exact_recipient_for_native_mention():
     router._summarizer = SimpleNamespace(chat=lambda **kw: '回答')
     router._detector = SimpleNamespace(is_trigger=lambda **kw: False)
     router._sticky = None
+    import threading
+    router._mention_lock = threading.Lock()
+    router._mention_windows = {}
     router._proactive = None
     router._admin = SimpleNamespace(handle=lambda *a: None)
     router.messages_processed = 0

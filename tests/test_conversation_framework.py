@@ -42,17 +42,17 @@ def test_auto_memory_waits_for_settled_batch_and_file_creation(tmp_path, monkeyp
             store.insert_message(_row(number, int(time.time()) - 10 + number,
                                       "synthetic conversation"))
         summarizer = Mock()
-        summarizer.consolidate_memory.return_value = "settled soul"
+        summarizer.memory_request.return_value = "NO_UPDATE"
         worker = MemoryConsolidator(store, summarizer)
         assert worker.check_and_consolidate("g") is False
-        summarizer.consolidate_memory.assert_not_called()
+        summarizer.memory_request.assert_not_called()
         path = store.ensure_group_memory_file("g")
         assert path.exists() and path.read_text(encoding="utf-8") == ""
         assert store.get_group_memory("g")["last_message_id"] is None
         store.insert_message(_row(3, int(time.time()) + 1000, "new episode"))
         assert worker.check_and_consolidate("g") is True
         assert store.get_group_memory("g")["last_message_id"] == "m2"
-        assert store.get_group_memory("g")["memory_text"] == "settled soul"
+        assert "【每个人】" in store.get_group_memory("g")["memory_text"]
     finally:
         conn.close()
 

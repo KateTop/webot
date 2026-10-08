@@ -33,18 +33,18 @@ class HistoryBackfillTest(unittest.TestCase):
                 boundary = store.get_latest_message_row_id("a@chatroom")
                 batches = []
 
-                def consolidate_memory(**kwargs):
-                    batches.append([m["message_id"] for m in kwargs["new_messages"]])
+                def consolidate_memory(task, existing, messages, *args, **kwargs):
+                    batches.append([m["message_id"] for m in messages])
                     if len(batches) == 1:
                         store.insert_message({
                             "message_id": "live", "chat_id": "a@chatroom",
                             "sender_id": "user", "sender_name": "User",
                             "content": "synthetic", "timestamp": 200,
                         })
-                    return "memory"
+                    return "NO_UPDATE"
 
                 summarizer = Mock()
-                summarizer.consolidate_memory.side_effect = consolidate_memory
+                summarizer.memory_request.side_effect = consolidate_memory
                 worker = MemoryConsolidator(store, summarizer)
                 while worker.check_and_consolidate(
                         "a@chatroom", force=True, through_row_id=boundary):

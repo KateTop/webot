@@ -84,6 +84,19 @@ def main():
     else:
         os.chdir(str(PROJECT_ROOT))
 
+    # Refuse to display an older instance's dashboard as this build.
+    import socket
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        occupied = probe.connect_ex(("127.0.0.1", 7327)) == 0
+    if occupied:
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0,"端口7327已被占用。请完全退出旧版WeBot，再启动本测试版。","WeBot 2026-10-09",0x30)
+        except Exception:
+            pass
+        return
+
     # Check if onboarding is needed
     from src.config import is_onboarding_done
     onboarding_needed = not is_onboarding_done()
@@ -127,7 +140,7 @@ def main():
             pass
         return
 
-    title = "webot — 初始设置" if onboarding_needed else "webot — Dashboard"
+    title = "webot — 2026-10-09 记忆协议版 — " + ("初始设置" if onboarding_needed else "Dashboard")
 
     # Try native WebView2, fall back to browser
     try:

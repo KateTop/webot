@@ -56,6 +56,8 @@ class WcdbBackend(AbstractWeChatBackend):
         self._groups = groups or []
         self._poll_sec = poll_sec
         self._store = store  # MessageStore fallback for name resolution
+        self._confirmation_lock = threading.Lock()
+        self._last_confirmed_id = {}
         self._running = False
         self._stop_requested = False
         self._client: Optional[WcdbNativeClient] = None
@@ -519,7 +521,8 @@ class WcdbBackend(AbstractWeChatBackend):
                 continue
             self._known_ids.add(msg_id)
 
-            if self._bot_name and self._bot_name in standardized["sender_name"]:
+            own_id = (getattr(self._client, "_config", None) or {}).get("myWxid", "")
+            if isinstance(own_id,str) and own_id and standardized.get("sender_id") == own_id:
                 continue
 
             self._trim_dedup()
@@ -568,10 +571,11 @@ class WcdbBackend(AbstractWeChatBackend):
                 # _send_and_confirm uses window_controller (keyboard), not
                 # _client (WCDB).  Don't hold _client_lock during send —
                 # it blocks the poll loop from reading new messages.
-                success = self._send_and_confirm(
-                    group_name, talker, reply,
-                    mention=standardized.get("reply_mention"),
-                )
+                success = self.send_confirmed_text(talker, reply,
+                    mention=standardized.get("reply_mention"), action=standardized.get("reply_action", ""))
+                callback_result = getattr(self, "on_delivery", None)
+                if callable(callback_result):
+                    callback_result(standardized, success, self._last_confirmed_id.get(talker, ""))
                 if success:
                     logger.info(
                         "Reply keyboard action completed: group='%s' (%d chars)",
@@ -737,11 +741,9 @@ class WcdbBackend(AbstractWeChatBackend):
         if is_system_join:
             raw_id = f"join|{talker}|{new_member_id}|{content}|{ts}"
         else:
-            raw_id = (
-                str(msg.get("server_id", ""))
-                or str(msg.get("local_id", ""))
-                or f"{sender}|{content}|{ts}"
-            )
+            server_id = str(msg.get("server_id", "") or "")
+            local_id = str(msg.get("local_id", "") or "")
+            raw_id = (server_id if server_id not in ("", "0") else local_id if local_id not in ("", "0") else f"{sender}|{content}|{ts}")
         msg_id = hashlib.md5(str(raw_id).encode()).hexdigest()
 
         return {
@@ -757,6 +759,7 @@ class WcdbBackend(AbstractWeChatBackend):
             "quotes_bot": quotes_bot,
             "quoted_content": quoted_content[:500] if quotes_bot else "",
             "is_group": True,
+            "is_self": bool(own_wxid and sender == own_wxid),
             "is_system_join": is_system_join,
             "new_member_id": new_member_id,
         }
@@ -793,6 +796,75 @@ class WcdbBackend(AbstractWeChatBackend):
             except Exception:
                 logger.exception("Could not persist failed send for group '%s'", group_name)
         return success
+
+    @staticmethod
+    def _raw_key(row):
+        return (str(row.get("sender_username", row.get("senderUsername", ""))),
+                str(row.get("server_id", "")),str(row.get("local_id", "")),
+                str(row.get("create_time", "")),str(row.get("message_content", row.get("content", ""))))
+
+    def send_confirmed_text(self, chat_id, content, mention=None, action=""):
+        """Serial send + bounded WCDB echo confirmation. Never retry an unconfirmed send."""
+        from src.conversation_policy import load_policy
+        from src.memory.workspace import MemoryWorkspace
+        import random
+        if not hasattr(self, "_confirmation_lock"):
+            # Set during construction in production.
+            self._confirmation_lock = threading.Lock()
+        if not hasattr(self, "_last_confirmed_id"):
+            self._last_confirmed_id = {}
+        with self._confirmation_lock:
+            if not self._running:
+                return False
+            self._last_confirmed_id.pop(chat_id, None)
+            own_id = (getattr(self._client, "_config", None) or {}).get("myWxid", "")
+            with self._client_lock:
+                before = self._client.get_messages(talker=chat_id, limit=100)
+            baseline = {self._raw_key(r) for r in before}
+            started = time.time()
+            policy = load_policy()
+            time.sleep(random.uniform(policy["send_delay_min_sec"], policy["send_delay_max_sec"]))
+            if not self._running:
+                return False
+            sent = self._send_and_confirm(self._talker_to_name(chat_id) or chat_id,chat_id,content,mention=mention)
+            match = None
+            if sent and own_id:
+                deadline = time.monotonic() + 12
+                while self._running and time.monotonic() < deadline:
+                    with self._client_lock:
+                        rows = self._client.get_messages(talker=chat_id, limit=100)
+                    for row in rows:
+                        sender = str(row.get("sender_username",row.get("senderUsername", "")))
+                        body = str(row.get("message_content",row.get("content", ""))).strip()
+                        if body.startswith(own_id+":\n"):
+                            body = body[len(own_id)+2:]
+                        normal = lambda value: re.sub(r"[\u2005\u200b\ufeff]", " ", value.replace("\r\n", "\n")).strip()
+                        timestamp = float(row.get("create_time",row.get("timestamp",0)) or 0)
+                        if sender == own_id and self._raw_key(row) not in baseline and timestamp >= started-2 and normal(body) == normal(content):
+                            match = row
+                            break
+                    if match:
+                        break
+                    time.sleep(0.5)
+            message_id = ""
+            if match:
+                server_id = str(match.get("server_id", "") or "")
+                local_id = str(match.get("local_id", "") or "")
+                raw_id = server_id if server_id not in ("", "0") else local_id if local_id not in ("", "0") else f"{own_id}|{content}|{int(started)}"
+                message_id = hashlib.md5(raw_id.encode()).hexdigest()
+            if self._store is not None:
+                MemoryWorkspace(self._store)
+                with self._store._lock, self._store.conn:
+                    # Body is retained only when observed in the actual account's chat database.
+                    self._store.conn.execute("INSERT INTO assistant_outbox(chat_id,content,action,status,message_id,created_at) VALUES(?,?,?,?,?,?)",
+                        (chat_id,content if match else "",action,"confirmed" if match else "unconfirmed" if sent else "failed",message_id,started))
+            if match:
+                if self._store is not None:
+                    self._store.insert_message(dict(message_id=message_id,chat_id=chat_id,
+                        sender_id="__assistant__",sender_name=self._bot_name or "我",content=content,
+                        timestamp=int(float(match.get("create_time",started))),msg_type=1))
+                self._last_confirmed_id[chat_id] = message_id
+            return match is not None
 
     def retry_failed_send(self, chat_id: str, content: str) -> bool:
         """Retry an already persisted item without creating another item."""

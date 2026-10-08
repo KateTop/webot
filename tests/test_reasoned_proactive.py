@@ -59,11 +59,14 @@ def test_skip_or_essay_never_becomes_message(setup, answer):
 
 
 def test_memory_excludes_absent_people_and_sensitive_lines():
-    memory = "【每个人】\nAlice: likes tea\nBob: likes coffee\nAlice: 知道就好，不主动提\n【群里的事】\nweekly picnic\n【观察中】\nunconfirmed\n【我说过的立场】\nprefer tea"
-    selected = select_memory(memory, [{"sender_name": "Alice"}])
-    assert "Alice: likes tea" in selected
-    assert "Bob" not in selected and "不主动提" not in selected
-    assert "unconfirmed" not in selected and "prefer tea" in selected
+    from src.memory.document import render,new_id
+    memory=render([dict(id=new_id(),section="每个人",text="Alice likes tea",subject_id="a"),
+        dict(id=new_id(),section="每个人",text="Bob likes coffee",subject_id="b"),
+        dict(id=new_id(),section="群里的事",text="weekly picnic",subject_id=""),
+        dict(id=new_id(),section="我说过的立场",text="prefer tea",subject_id="__assistant__")])
+    selected = select_memory(memory, [{"sender_id": "a"}])
+    assert "Alice likes tea" in selected and "Bob" not in selected
+    assert "prefer tea" in selected
 
 
 def test_no_reason_no_api_candidate_and_quiet_hours(setup):

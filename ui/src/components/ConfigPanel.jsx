@@ -129,8 +129,8 @@ function AiSection({ form, update }) {
       <div className="mt-7 border-t border-border-main pt-5">
         <h4 className="text-sm font-semibold mb-2">自定义 Prompt</h4>
         <p className="text-xs mb-4">问答指令适用于艾特和引用；主动发言使用独立指令；总结指令适用于短篇与长篇群聊总结。追加到内置指令，修改后下次 AI 调用生效。</p>
-        {['persona', 'proactive', 'chat', 'summary'].map(key => (
-          <Field key={key} label={{ persona: '助手性格与品味', proactive: '主动发言指令', chat: '群聊问答指令', summary: '群聊总结指令' }[key]}>
+        {['base', 'persona', 'proactive', 'chat', 'summary'].map(key => (
+          <Field key={key} label={{ base: '共用基础人设', persona: '助手性格与品味', proactive: '主动发言指令', chat: '群聊问答指令', summary: '群聊总结指令' }[key]}>
             <textarea className="w-full min-h-28 rounded-xl border border-border-main bg-bg-card p-3 text-sm text-text-main"
               value={prompts[key] || ''} maxLength={12000}
               onChange={e => setPrompts(prev => ({ ...prev, [key]: e.target.value }))}

@@ -18,6 +18,15 @@ export default function MemoryPanel() {
   const [chatId, setChatId] = useState('')
   const [section, setSection] = useState('soul')
   const [memory, setMemory] = useState(null)
+  const [versionToken, setVersionToken] = useState(null)
+  const [needsMigration, setNeedsMigration] = useState(false)
+  const [migrationText, setMigrationText] = useState('')
+  const [snapshots, setSnapshots] = useState([])
+  const [blockText, setBlockText] = useState('[]')
+  const [settlePrompt, setSettlePrompt] = useState('')
+  const [reminders, setReminders] = useState([])
+  const [deliveries, setDeliveries] = useState([])
+  const [audit, setAudit] = useState([])
   const [soul, setSoul] = useState('')
   const [savedSoul, setSavedSoul] = useState('')
   const [soulPath, setSoulPath] = useState('')
@@ -36,7 +45,7 @@ export default function MemoryPanel() {
       setGroups(data.groups || [])
       if (data.groups?.length) setChatId(data.groups[0].chat_id)
     }).catch(e => setError(e.message))
-    request('/prompts').then(data => setPrompt(data.prompts?.memory || ''))
+    request('/prompts').then(data => { setPrompt(data.prompts?.memory || ''); setSettlePrompt(data.prompts?.settle || '') })
       .catch(e => setError(e.message))
     request('/conversation-policy').then(data => setPolicy(data.policy))
       .catch(e => setError(e.message))
@@ -46,6 +55,14 @@ export default function MemoryPanel() {
     if (!id) return
     const data = await request(`/memory?chat_id=${encodeURIComponent(id)}`)
     setMemory(data.memory)
+    setVersionToken(data.token)
+    setReminders(data.reminders || [])
+    setDeliveries(data.deliveries || [])
+    setAudit(data.audit || [])
+    setNeedsMigration(data.needs_migration)
+    setMigrationText(data.migration_preview || '')
+    setSnapshots(data.snapshots || [])
+    setBlockText(JSON.stringify(data.blocks || [], null, 2))
     setSoul(data.memory?.memory_text || '')
     setSavedSoul(data.memory?.memory_text || '')
     setSoulPath(data.soul_path || '')
@@ -81,13 +98,22 @@ export default function MemoryPanel() {
     try {
       if (action === 'soul') {
         const text = soul
-        await request('/memory/save', { chat_id: chatId, text })
+        await request('/memory/save', { chat_id: chatId, text, token: versionToken }); await refreshGroup()
         setSavedSoul(text)
         setSoulExists(true)
         setMessage('soul.md 已保存；下一次问答或整理即可读取')
       } else if (action === 'prompt') {
-        await request('/prompts', { memory: prompt })
+        await request('/prompts', { memory: prompt, settle: settlePrompt })
         setMessage('记忆整理指令已保存；下一次整理立即生效')
+      } else if (action === 'migrate') {
+        await request('/memory/migrate', { chat_id: chatId, text: migrationText, token: versionToken })
+        await refreshGroup(); setMessage('迁移已应用，旧正文已备份；请检查人物归属，迁移不会猜测身份。')
+      } else if (action === 'blocks') {
+        await request('/memory/blocks', { chat_id: chatId, blocks: JSON.parse(blockText) })
+        setMessage('不再记录清单已保存；原始聊天库不受影响。')
+      } else if (action === 'settle') {
+        const data = await request('/memory/settle', { chat_id: chatId })
+        setJobId(data.job_id); return
       } else if (action === 'create') {
         await request('/memory/create', { chat_id: chatId })
         await refreshGroup()
@@ -142,7 +168,7 @@ export default function MemoryPanel() {
     <div className="flex flex-wrap gap-2">
       {[
         ['soul', '群聊 soul.md'], ['pending', '待整理对话'],
-        ['prompt', '记忆整理指令'], ['policy', '对话策略'], ['nicknames', '群友昵称'],
+        ['activity', '提醒与发送状态'], ['versions', '迁移与版本'], ['blocks', '不再记录'], ['prompt', '记忆整理指令'], ['policy', '对话策略'], ['nicknames', '群友昵称'],
       ].map(([key, label]) => <button key={key} onClick={() => setSection(key)}
         className={`px-4 py-2 rounded-full text-sm ${section === key ? 'bg-brand-green-light text-brand-green font-semibold' : 'bg-bg-raised text-text-muted'}`}>{label}</button>)}
     </div>
@@ -161,7 +187,28 @@ export default function MemoryPanel() {
       <button className={button} disabled={!chatId || working || soul === savedSoul} onClick={() => act('soul')}>保存 soul.md</button>
     </div>}
 
-    {section === 'pending' && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-4">
+    {section === 'activity' && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-4">
+      <h3>获准的提醒与发送状态</h3><p className={muted}>提醒只接受艾特/引用中的明确请求，例如“提醒我 2026-10-10 12:00 喂猫”，确认消息在微信库中出现后才启用。每30秒检查，未确认不自动重发。</p>
+      <button className={button} onClick={() => refreshGroup().catch(e => setError(e.message))}>刷新状态</button>
+      {reminders.map(item => <div key={item.id} className="border rounded-xl p-3"><p>{stamp(item.due)} · {item.status} · {item.text}</p>
+        {item.status === 'scheduled' && <button onClick={async () => {try { await request('/memory/reminder-cancel',{chat_id:chatId,id:item.id}); await refreshGroup() } catch(e) {setError(e.message)} }}>取消提醒</button>}</div>)}
+      <h4>最近发送确认</h4>{deliveries.map(item => <p key={item.id}>{stamp(item.created_at)} · {item.action || '问答/提醒'} · {{confirmed:'微信库已确认',unconfirmed:'未确认，不自动重发',failed:'发送操作失败'}[item.status] || item.status}</p>)}
+      <h4>记忆操作记录</h4>{audit.map((item,index) => <p key={index}>{stamp(item.created_at)} · {item.operations}</p>)}
+    </div>}
+    {section === 'versions'  && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-4">
+      <h3>迁移预览与版本历史</h3>
+      <p className={muted}>旧记忆先预览，再应用。迁移保留措辞，未知人物归属留空；请核对 subject_id。ID 与元数据应保留。应用前备份旧正文，最近保留5版。</p>
+      <textarea rows={14} value={migrationText} onChange={e => setMigrationText(e.target.value)} className="w-full bg-bg-raised rounded-xl p-3" />
+      <button className={button} disabled={working || !chatId} onClick={() => act('migrate')}>{needsMigration ? '确认应用迁移并备份' : '保存所审阅的结构'}</button>
+      {snapshots.map(item => <div key={item.id} className="flex justify-between"><span>版本 {item.version} · {stamp(item.created_at)}</span>
+        <button disabled={working} onClick={async () => { try { await request('/memory/restore', {chat_id:chatId,snapshot_id:item.id}); await refreshGroup() } catch(e) {setError(e.message)} }}>恢复此版本</button></div>)}
+    </div>}
+    {section === 'blocks' && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-4">
+      <h3>不再记录清单</h3><p className={muted}>仅保存成员 ID 与粗粒度主题，不保留被忘记的具体细节。原始聊天库仍保留。移除规则会允许未来重新提取；不会恢复已清除的快照。</p>
+      <textarea rows={10} value={blockText} onChange={e => setBlockText(e.target.value)} className="w-full bg-bg-raised rounded-xl p-3" />
+      <button className={button} disabled={working} onClick={() => act('blocks')}>保存清单</button>
+    </div>}
+    {section === 'pending'  && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-4">
       <div><h3 className="font-semibold">聊天库中尚未整理的对话</h3>
         <p className={muted}>按间隔、条数和连续消息确认的话题变化分段；参数可在“对话策略”调整。为保护游标，只能先整理最早一段。</p></div>
       {(pending.segments || []).length === 0 && <p className={muted}>当前没有待整理消息。</p>}
@@ -187,7 +234,10 @@ export default function MemoryPanel() {
       <p className={muted}>这里的内容追加到内置记忆整理规则后。自动整理、启动补录和手动整理使用同一份指令；留空时使用内置规则。</p>
       <textarea aria-label="记忆整理指令" value={prompt} onChange={e => setPrompt(e.target.value)} rows={12}
         className="w-full bg-bg-raised border border-border-main rounded-xl p-4 text-sm text-text-main focus:outline-none focus:border-brand-green" placeholder="例如：重要事件保留时间与依据；不要把玩笑写成稳定的人物判断。" />
+      <p className={muted}>强制协议：无更新只返回 NO_UPDATE；空白是失败，不推进游标。写入引用消息ID，日期由程序计算。每批最多100条。</p>
+      <h4>夜间沉淀补充指令</h4><textarea rows={8} value={settlePrompt} onChange={e => setSettlePrompt(e.target.value)} className="w-full bg-bg-raised rounded-xl p-3" />
       <button className={button} disabled={working} onClick={() => act('prompt')}>保存整理指令</button>
+      <button className={button} disabled={working || needsMigration} onClick={() => act('settle')}>现在执行沉淀</button>
     </div>}
 
     {section === 'policy' && policy && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-5">
@@ -200,7 +250,13 @@ export default function MemoryPanel() {
           ['topic_min_messages', '话题变化前最少消息', 3, 50],
           ['topic_similarity', '话题相似度阈值（0–0.8）', 0, 0.8],
           ['memory_settle_sec', '沉寂后整理（秒）', 60, 3600],
-          ['memory_min_messages', '自动整理最少消息', 2, 100],
+          ['memory_body_max_chars', '记忆正文上限（不含ID与证据）', 500, 10000],
+          ['memory_min_messages', '自动整理最少有效消息', 2, 100],
+          ['memory_fallback_sec', '慢速群整理兜底（秒）', 3600, 86400],
+          ['memory_tail_sec', '兜底保留最近尾巴（秒）', 60, 1800],
+          ['mention_per_minute', '每人每分钟艾特/引用上限', 1, 60],
+          ['send_delay_min_sec', '发送延迟下限（秒）', 0, 10],
+          ['send_delay_max_sec', '发送延迟上限（秒）', 0, 10],
           ['proactive_min_messages', '主动发言最少消息', 2, 100],
           ['proactive_min_participants', '主动发言最少人数', 1, 20],
           ['proactive_min_age_sec', '话题最短持续（秒）', 0, 600],
@@ -235,7 +291,7 @@ export default function MemoryPanel() {
         <input value={policy.proactive_trigger_words} maxLength={200}
           onChange={e => setPolicy(prev => ({ ...prev, proactive_trigger_words: e.target.value }))}
           className="w-full bg-bg-raised border border-border-main rounded-lg px-3 py-2" /></label>
-      <p className={muted}>推荐先用“追问、带细节的回应”。每日额度及冷却按群保存，切段和重启不会重置；生成非空回复即占额度，发送失败也不补发。未观察到明确接话不代表反感。参数保存立即生效，人设与主动发言指令在 AI 配置中编辑。</p>
+      <p className={muted}>推荐先用“追问、带细节的回应”。每日额度及冷却按群保存，切段和重启不会重置；确认在微信库中发出后占额度；未确认不会自动重复发送。未观察到明确接话不代表反感。参数保存立即生效，人设与主动发言指令在 AI 配置中编辑。</p>
       <button className={button} disabled={working} onClick={() => act('policy')}>保存对话策略</button>
     </div>}
 

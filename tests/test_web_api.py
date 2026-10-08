@@ -765,10 +765,13 @@ class MemoryEndpointTests(unittest.TestCase):
                 preview = call(f"/api/memory/segment?chat_id=test%40chatroom&"
                                f"start_id={segment['start_id']}&end_id={segment['end_id']}")
                 self.assertEqual(preview["messages"][0]["content"], "synthetic message")
-                saved = call("/api/memory/save", {"chat_id": "test@chatroom", "text": "test soul"})
+                from src.memory.document import migration_preview
+                edited = migration_preview("test soul")
+                state = call("/api/memory?chat_id=test%40chatroom")
+                saved = call("/api/memory/save", {"chat_id": "test@chatroom", "text": edited, "token":state["token"]})
                 self.assertTrue(saved["ok"])
                 state = call("/api/memory?chat_id=test%40chatroom")
-                self.assertEqual(state["memory"]["memory_text"], "test soul")
+                self.assertEqual(state["memory"]["memory_text"], edited)
                 self.assertIsNone(state["memory"]["last_message_id"])
                 self.assertEqual(state["pending"]["segments"][0]["count"], 1)
 
@@ -780,7 +783,7 @@ class MemoryEndpointTests(unittest.TestCase):
                     })
                     self.assertFalse(blocked["ok"])
                 self.assertEqual(call("/api/memory?chat_id=test%40chatroom")
-                                 ["memory"]["memory_text"], "test soul")
+                                 ["memory"]["memory_text"], edited)
 
     def test_conversation_policy_roundtrip(self):
         from src import conversation_policy

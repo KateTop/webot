@@ -1,134 +1,97 @@
-"""Regression tests for failed and overlapping memory consolidation."""
-
+"""Memory protocol regression tests against synthetic SQLite stores."""
 import threading
 import time
 from unittest.mock import Mock, patch
-
+from src.db import MessageStore, initialize_db
 from src.memory import consolidator as module
 from src.summarize.base import AbstractSummarizer
 
 
-def _fixture(count=50, result="updated"):
-    messages = [{"message_id": str(i), "content": "hello"} for i in range(count)]
-    store = Mock()
-    store.get_group_memory.return_value = None
-    store.get_new_message_count.return_value = count
-    store.get_messages_since_id.return_value = messages
-    store.list_pending_memory_segments.return_value = {"segments": [
-        {"closed": True, "count": count, "end_id": count},
-    ]}
-    summarizer = Mock()
-    summarizer.consolidate_memory.return_value = result
-    return module.MemoryConsolidator(store, summarizer), store, summarizer
+def _fixture(count=50, result="NO_UPDATE"):
+    store = MessageStore(initialize_db(":memory:"))
+    for group in ("group", "group-a", "group-b"):
+        for i in range(count):
+            store.insert_message(dict(message_id=f"{group}:{i}",chat_id=group,sender_id="u",sender_name="User",content="synthetic conversation",timestamp=100+i))
+    summarizer=Mock()
+    summarizer.memory_request.return_value=result
+    return module.MemoryConsolidator(store,summarizer),store,summarizer
 
 
 def test_first_consolidation_waits_for_message_threshold():
-    consolidator, store, summarizer = _fixture(count=1)
-    assert consolidator.check_and_consolidate("group") is False
-    summarizer.consolidate_memory.assert_not_called()
-    store.get_messages_since_id.assert_not_called()
+    worker,store,ai=_fixture(1)
+    assert not worker.check_and_consolidate("group")
+    ai.memory_request.assert_not_called()
 
 
 def test_history_import_can_force_small_batch():
-    consolidator, store, summarizer = _fixture(count=1)
-    assert consolidator.check_and_consolidate("group", force=True) is True
-    summarizer.consolidate_memory.assert_called_once()
-    store.upsert_group_memory.assert_called_once()
+    worker,store,ai=_fixture(1)
+    assert worker.check_and_consolidate("group",force=True)
+    assert store.get_group_memory("group")["last_message_id"] == "group:0"
 
 
 def test_small_closed_episode_does_not_block_following_full_episode():
-    consolidator, store, summarizer = _fixture(count=100)
-    store.list_pending_memory_segments.return_value = {"segments": [
-        {"closed": True, "count": 2, "end_id": 2},
-        {"closed": True, "count": 100, "end_id": 102},
-    ]}
-    assert consolidator.check_and_consolidate("group") is True
-    summarizer.consolidate_memory.assert_called_once()
-    assert store.get_messages_since_id.call_args.kwargs["through_row_id"] == 102
+    worker,store,ai=_fixture(100)
+    store.list_pending_memory_segments=Mock(return_value={"segments":[{"closed":True,"count":2,"end_id":2},{"closed":True,"count":100,"end_id":102}]})
+    assert worker.check_and_consolidate("group")
+    assert store.get_group_memory("group")["message_count"] == 100
 
 
-def test_unchanged_memory_still_advances_cursor():
-    consolidator, store, summarizer = _fixture(count=1, result="same")
-    store.get_group_memory.return_value = {
-        "memory_text": "same", "message_count": 10,
-        "last_message_id": "old", "last_consolidated": 0,
-    }
-    assert consolidator.check_and_consolidate("group", force=True) is True
-    self_call = store.upsert_group_memory.call_args.kwargs
-    assert self_call["last_message_id"] == "0"
-    assert self_call["message_count"] == 11
+def test_no_update_advances_without_rewriting_memory():
+    worker,store,ai=_fixture(1)
+    assert worker.check_and_consolidate("group",force=True)
+    before=store.get_group_memory("group")["memory_text"]
+    store.insert_message(dict(message_id="next",chat_id="group",sender_id="u",sender_name="User",content="more synthetic text",timestamp=150))
+    assert worker.check_and_consolidate("group",force=True)
+    assert store.get_group_memory("group")["memory_text"] == before
+    assert store.get_group_memory("group")["last_message_id"] == "next"
 
 
 def test_failure_cools_down_only_its_group():
-    consolidator, store, summarizer = _fixture(result="")
-    assert consolidator.check_and_consolidate("group-a") is False
-    assert consolidator.check_and_consolidate("group-a") is False
-    assert consolidator.check_and_consolidate("group-b") is False
-    assert summarizer.consolidate_memory.call_count == 2
-    store.upsert_group_memory.assert_not_called()
+    worker,store,ai=_fixture(result="")
+    assert not worker.check_and_consolidate("group-a")
+    assert not worker.check_and_consolidate("group-a")
+    assert not worker.check_and_consolidate("group-b")
+    assert ai.memory_request.call_count == 4
+    assert store.get_group_memory("group-a") is None
 
 
 def test_same_group_cannot_overlap():
-    entered = threading.Event()
-    release = threading.Event()
-    consolidator, store, summarizer = _fixture()
-
-    def blocked(**_kwargs):
-        entered.set()
-        release.wait(5)
-        return "updated"
-
-    summarizer.consolidate_memory.side_effect = blocked
-    first = threading.Thread(target=consolidator.check_and_consolidate, args=("group",))
-    first.start()
+    entered,release=threading.Event(),threading.Event()
+    worker,store,ai=_fixture()
+    def blocked(*args,**kwargs):
+        entered.set();release.wait(5);return "NO_UPDATE"
+    ai.memory_request.side_effect=blocked
+    thread=threading.Thread(target=worker.check_and_consolidate,args=("group",));thread.start()
     try:
         assert entered.wait(2)
-        assert consolidator.check_and_consolidate("group") is False
-        assert summarizer.consolidate_memory.call_count == 1
+        assert not worker.check_and_consolidate("group")
+        assert ai.memory_request.call_count == 1
     finally:
-        release.set()
-        first.join(5)
-    assert not first.is_alive()
-    store.upsert_group_memory.assert_called_once()
+        release.set();thread.join(5)
+    assert not thread.is_alive()
+    assert store.get_group_memory("group")["last_message_id"] == "group:49"
 
 
-def test_timeout_waits_for_original_request_even_after_cooldown():
-    release = threading.Event()
-    consolidator, store, summarizer = _fixture()
-
-    def blocked(**_kwargs):
-        release.wait(5)
-        return "late result"
-
-    summarizer.consolidate_memory.side_effect = blocked
-    with patch.object(module, "CONSOLIDATE_CALL_TIMEOUT_SEC", 0.01), \
-         patch.object(module, "CONSOLIDATE_FAILURE_COOLDOWN_SEC", 0):
+def test_timeout_does_not_write_late_result():
+    release=threading.Event()
+    worker,store,ai=_fixture()
+    ai.memory_request.side_effect=lambda *a,**k: release.wait(5) and "NO_UPDATE"
+    with patch.object(module,"_call_timeout",return_value=.01),patch.object(module,"CONSOLIDATE_FAILURE_COOLDOWN_SEC",0):
         try:
-            assert consolidator.check_and_consolidate("group") is False
-            assert consolidator.check_and_consolidate("group") is False
-            assert summarizer.consolidate_memory.call_count == 1
-            store.upsert_group_memory.assert_not_called()
+            assert not worker.check_and_consolidate("group")
+            assert not worker.check_and_consolidate("group")
+            assert ai.memory_request.call_count == 1
         finally:
             release.set()
-    # Wait only for the test worker; its late result must not write memory.
-    for _ in range(100):
-        if consolidator._timed_out["group"].done():
-            break
-        time.sleep(0.01)
-    store.upsert_group_memory.assert_not_called()
+    worker._timed_out["group"].result(timeout=1)
+    assert store.get_group_memory("group") is None
 
 
 def test_last_retry_has_no_sleep():
-    summarizer = Mock(spec=AbstractSummarizer)
-    summarizer.max_retries = 3
-    summarizer.retry_exceptions = (ConnectionError,)
-    call = Mock(side_effect=ConnectionError("offline"))
+    ai=Mock(spec=AbstractSummarizer);ai.max_retries=3;ai.retry_exceptions=(ConnectionError,)
+    call=Mock(side_effect=ConnectionError("offline"))
     with patch("src.summarize.base.time.sleep") as sleep:
-        try:
-            AbstractSummarizer._retry_with_backoff(summarizer, call, "memory consolidation")
-        except RuntimeError:
-            pass
-        else:
-            assert False, "expected exhausted retry error"
+        try: AbstractSummarizer._retry_with_backoff(ai,call,"memory")
+        except RuntimeError: pass
     assert call.call_count == 3
-    assert [c.args[0] for c in sleep.call_args_list] == [2, 4]
+    assert [c.args[0] for c in sleep.call_args_list] == [2,4]

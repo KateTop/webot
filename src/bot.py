@@ -66,6 +66,7 @@ class HealthMonitor:
                 break
             cycle += 1
             try:
+                self._router.check_due_reminders(self._backend)
                 # Fast tick (every 30s): push live stats to dashboard
                 self._on_tick(
                     messages_processed=self._router.messages_processed,
@@ -111,6 +112,7 @@ class HealthMonitor:
         if self._running:
             try:
                 self._router.consolidate_settled_memories()
+                self._router.periodic_memory_tasks(self._backend)
             except Exception:
                 logger.exception("Settled memory scan failed")
 
@@ -256,6 +258,7 @@ class Bot:
         backend = self._create_wechat_backend(store, router)
         self._backend = backend
         self.backend = backend   # public ref for lifecycle control
+        backend.on_delivery = router.record_delivery
 
         # Register backend with web server for stop/restart (explicit
         # API — no monkey-patching needed).

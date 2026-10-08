@@ -6,6 +6,7 @@ import pytest
 
 from src.db import MessageStore, initialize_db
 from src.memory.consolidator import MemoryConsolidator
+from src.memory.document import render, migration_preview
 from src.summarize import prompt_settings
 
 
@@ -30,24 +31,26 @@ def test_soul_file_and_manual_segment_cursor(tmp_path):
             "group@chatroom", first["start_id"], first["end_id"])] == [
                 "synthetic 0", "synthetic 1"]
 
-        store.save_group_memory_text("group@chatroom", "initial soul")
+        initial= migration_preview("initial soul")
+        store.save_group_memory_text("group@chatroom", initial)
         path = store._soul_path("group@chatroom")
-        assert path.name == "soul.md" and path.read_text(encoding="utf-8") == "initial soul"
+        assert path.name == "soul.md" and path.read_text(encoding="utf-8") == initial
 
         summarizer = Mock()
-        summarizer.consolidate_memory.return_value = "updated soul"
+        summarizer.memory_request.return_value = "NO_UPDATE"
         worker = MemoryConsolidator(store, summarizer)
         with pytest.raises(ValueError):
             worker.consolidate_first_pending_segment("group@chatroom", second["end_id"])
         assert worker.consolidate_first_pending_segment("group@chatroom", first["end_id"])
         assert store.get_group_memory("group@chatroom")["last_message_id"] == "m1"
-        assert store.get_group_memory("group@chatroom")["memory_text"] == "updated soul"
+        assert store.get_group_memory("group@chatroom")["memory_text"] == initial
         assert [item["count"] for item in store.list_pending_memory_segments(
             "group@chatroom")["segments"]] == [2]
 
-        worker.save_manual_text("group@chatroom", "edited soul")
+        edited = migration_preview("edited soul")
+        worker.save_manual_text("group@chatroom", edited)
         assert store.get_group_memory("group@chatroom")["last_message_id"] == "m1"
-        assert path.read_text(encoding="utf-8") == "edited soul"
+        assert path.read_text(encoding="utf-8") == edited
         path.write_text("external edit", encoding="utf-8")
         assert store.get_group_memory("group@chatroom")["memory_text"] == "external edit"
     finally:

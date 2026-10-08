@@ -40,6 +40,9 @@ class FailoverSummarizer:
     def summarize(self, *args, **kwargs):
         return self._call("summarize", *args, **kwargs)
 
+    def memory_request(self, *args, **kwargs):
+        return self._call("memory_request", *args, **kwargs)
+
     def consolidate_memory(self, *args, **kwargs):
         return self._call("consolidate_memory", *args, **kwargs)
 

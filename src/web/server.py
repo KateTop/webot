@@ -991,6 +991,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
         # Only delegate specific API paths; return 405 for unknown POST paths
         if self.path in ("/api/config", "/api/config/import", "/api/prompts", "/api/start", "/api/stop",
                          "/api/memory/save", "/api/memory/create", "/api/memory/consolidate",
+                         "/api/memory/migrate", "/api/memory/restore", "/api/memory/blocks", "/api/memory/settle", "/api/memory/reminder-cancel",
                          "/api/conversation-policy",
                          "/api/nicknames",
                          "/api/welcome/templates",
@@ -1043,6 +1044,57 @@ class _UIHandler(SimpleHTTPRequestHandler):
             query = _parse_qs(parsed_path.query)
             conn = None
             try:
+                if parsed_path.path in ("/api/memory/migrate", "/api/memory/restore", "/api/memory/blocks", "/api/memory/settle", "/api/memory/reminder-cancel"):
+                    if self.command != "POST":
+                        raise ValueError("POST required")
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 40000:
+                        raise ValueError("请求大小无效")
+                    payload = json.loads(self.rfile.read(length))
+                    chat_id = str(payload.get("chat_id", "")).strip()
+                    if not chat_id or len(chat_id)>256:
+                        raise ValueError("群 ID 无效")
+                    conn, store = _failure_store()
+                    from src.memory.workspace import MemoryWorkspace
+                    workspace = MemoryWorkspace(store)
+                    if parsed_path.path.endswith("/migrate"):
+                        workspace.migrate(chat_id,payload["text"],tuple(payload["token"]))
+                    elif parsed_path.path.endswith("/restore"):
+                        workspace.restore(chat_id,int(payload["snapshot_id"]))
+                    elif parsed_path.path.endswith("/reminder-cancel"):
+                        with store._lock, store.conn:
+                            cursor = store.conn.execute("UPDATE authorized_reminders SET status='cancelled' WHERE id=? AND chat_id=? AND status='scheduled'",(int(payload["id"]),chat_id))
+                            if not cursor.rowcount:
+                                raise ValueError("任务已取消、正在发送或已结束")
+                    elif parsed_path.path.endswith("/blocks"):
+                        blocks = payload.get("blocks")
+                        if not isinstance(blocks,list) or len(blocks)>200 or any(not isinstance(b,dict) or not b.get("subject_id") or not b.get("topic") or len(str(b["topic"]))>100 for b in blocks):
+                            raise ValueError("不再记录清单无效")
+                        with workspace.group_lock(chat_id), store._lock, store.conn:
+                            store.conn.execute("DELETE FROM memory_blocks WHERE chat_id=?",(chat_id,))
+                            store.conn.executemany("INSERT OR IGNORE INTO memory_blocks VALUES(?,?,?)",[(chat_id,b["subject_id"],b["topic"]) for b in blocks])
+                    else:
+                        with _memory_runtime_lock:
+                            runtime = _memory_runtime
+                        if runtime is None:
+                            raise ValueError("请先启动机器人再执行沉淀")
+                        import uuid
+                        job_id = uuid.uuid4().hex
+                        with _memory_jobs_lock:
+                            _memory_jobs[job_id] = {"state":"running", "chat_id":chat_id}
+                        def settle_job():
+                            try:
+                                runtime.maintenance(chat_id,force=True)
+                                state,error = "done",""
+                            except Exception:
+                                state,error = "failed","沉淀未通过验收，请检查记忆格式与接口"
+                            with _memory_jobs_lock:
+                                _memory_jobs[job_id].update(state=state,error=error)
+                        threading.Thread(target=settle_job,daemon=True).start()
+                        self.send_json({"ok":True,"job_id":job_id})
+                        return
+                    self.send_json({"ok":True})
+                    return
                 if parsed_path.path == "/api/memory/jobs":
                     job_id = query.get("id", [""])[0]
                     with _memory_jobs_lock:
@@ -1065,6 +1117,8 @@ class _UIHandler(SimpleHTTPRequestHandler):
                         self.send_json({"ok": True, "soul_path": str(path)})
                         return
                     if parsed_path.path == "/api/memory/save":
+                        if not isinstance(payload.get("token"),list) or len(payload["token"])!=2:
+                            raise ValueError("请刷新记忆以取得版本号后保存")
                         text_value = payload.get("text", "")
                         if not isinstance(text_value, str):
                             raise ValueError("soul.md 必须是文本")
@@ -1075,11 +1129,11 @@ class _UIHandler(SimpleHTTPRequestHandler):
                             with _memory_runtime_lock:
                                 runtime = _memory_runtime
                             if runtime is not None:
-                                runtime.save_manual_text(chat_id, text_value)
+                                runtime.save_manual_text(chat_id, text_value, payload.get("token"))
                             else:
                                 from src.memory.consolidator import MemoryConsolidator
                                 conn, store = _failure_store()
-                                MemoryConsolidator(store, None).save_manual_text(chat_id, text_value)
+                                MemoryConsolidator(store, None).save_manual_text(chat_id, text_value, payload.get("token"))
                         self.send_json({"ok": True})
                         return
                     end_id = int(payload.get("end_id", 0))
@@ -1132,13 +1186,28 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 if parsed_path.path == "/api/memory":
                     memory = store.get_group_memory(chat_id)
                     pending = store.list_pending_memory_segments(chat_id)
+                    from src.memory.workspace import MemoryWorkspace
+                    from src.memory.document import parse
+                    workspace = MemoryWorkspace(store)
+                    source, token = workspace.read(chat_id)
+                    try:
+                        parse(source)
+                        needs_migration = False
+                    except ValueError:
+                        needs_migration = True
+                    with store._lock:
+                        reminders = [dict(r) for r in store.conn.execute("SELECT id,subject_id,text,due,status FROM authorized_reminders WHERE chat_id=? ORDER BY id DESC LIMIT 100",(chat_id,))]
+                        deliveries = [dict(r) for r in store.conn.execute("SELECT id,action,status,created_at FROM assistant_outbox WHERE chat_id=? ORDER BY id DESC LIMIT 30",(chat_id,))]
+                        audit = [dict(r) for r in store.conn.execute("SELECT operations,created_at FROM memory_audit WHERE chat_id=? ORDER BY id DESC LIMIT 30",(chat_id,))]
                     path = store._soul_path(chat_id)
                     self.send_json({"ok": True, "memory": memory,
                                     "pending": pending, "soul_path": str(path) if path else "",
-                                    "soul_exists": bool(path and path.exists())})
+                                    "soul_exists": bool(path and path.exists()), "token":list(token),
+                                    "needs_migration":needs_migration,"migration_preview":workspace.preview(chat_id)["text"],
+                                    "snapshots":workspace.snapshots(chat_id),"blocks":workspace.blocks(chat_id),"reminders":reminders,"deliveries":deliveries,"audit":audit})
                     return
                 raise ValueError("Unknown memory endpoint")
-            except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+            except (ValueError, RuntimeError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
                 self.send_json({"ok": False, "error": str(exc)})
             except Exception:
                 logger.exception("Memory API failed")

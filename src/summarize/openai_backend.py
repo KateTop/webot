@@ -277,60 +277,17 @@ class OpenAISummarizer(AbstractSummarizer):
 
     # ── Memory consolidation ───────────────────────────────────────
 
-    def consolidate_memory(self, existing_memory: str,
-                           new_messages: list[dict]) -> str:
-        """Update group memory by incorporating new messages.
+    def consolidate_memory(self, existing_memory: str, new_messages: list[dict]) -> str:
+        from src.memory.document import parse
+        return self.memory_request("write", parse(existing_memory), new_messages)
 
-        Returns the updated first-person diary-style memory text (≤2000 chars).
-        """
-        if not new_messages:
-            return existing_memory
-
-        # Format new messages for the prompt
-        msg_lines = []
-        for m in new_messages[-200:]:  # cap at 200 messages per consolidation
-            sender = m.get("sender_name", "?")
-            content = m.get("content", "")
-            if content:
-                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.get("timestamp") or 0))
-                msg_lines.append(f"[{when}] {sender}: {content}")
-
-        if not msg_lines:
-            return existing_memory
-
-        existing_display = existing_memory if existing_memory else "（暂无，这是第一次整理记忆）"
-
-        # 转义消息中的花括号，避免 str.format() 报 KeyError
-        escaped_memory = existing_display.replace("{", "{{").replace("}", "}}")
-        escaped_msgs = "\n".join(msg_lines).replace("{", "{{").replace("}", "}}")
-
-        system_prompt = MEMORY_CONSOLE_PROMPT.format(
-            existing_memory=escaped_memory,
-            new_messages=escaped_msgs,
-        )
-        from .prompt_settings import with_user_instructions
-        system_prompt = with_user_instructions(system_prompt, "memory")
-
-        def call():
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=2048,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": "请输出更新后的完整记忆日记。"},
-                ],
-            )
-            text = response.choices[0].message.content or ""
-            # Enforce 2000-char soft cap
-            if len(text) > 2000:
-                text = text[:2000]
-            return text.strip()
-
-        try:
-            return self._retry_with_backoff(call, "memory consolidation")
-        except RuntimeError as e:
-            logger.warning("Memory consolidation failed: %s", e)
-            raise
+    def _call_protocol_api(self, prompt):
+        response = self.client.chat.completions.create(model=self.model, max_tokens=8192,
+            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "请按协议返回结果"}],
+            extra_body=self._extra_body())
+        if not response.choices or response.choices[0].finish_reason != "stop":
+            raise ValueError("记忆响应未正常结束，拒绝推进进度")
+        return response.choices[0].message.content or ""
 
     # ── Map-Reduce ────────────────────────────────────────────────
 

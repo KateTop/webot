@@ -10,6 +10,8 @@ Routes messages to four response modes:
 import logging
 import re
 import time
+import threading
+from collections import deque
 from typing import Optional
 
 from .proactive.gate import ProactiveGate
@@ -67,6 +69,11 @@ class MessageRouter:
         self._admin = admin_handler
         self._nicks = nickname_service
         self._config = config
+        self._mention_lock = threading.Lock()
+        self._mention_windows = {}
+        self._maintenance_running = set()
+        self._maintenance_lock = threading.Lock()
+        self._reminder_running = False
         self._proactive = ProactiveGate(config, store)
         self._sticky = StickyMentionTracker(
             ttl_sec=config.sticky_mention_ttl_sec,
@@ -103,14 +110,8 @@ class MessageRouter:
 
         Returns reply text if a reply should be sent, or None.
         """
-        # Skip messages from the bot itself (prevent infinite loops).
-        # Use a forgiving match — WeChat display names can vary slightly
-        # (extra spaces, punctuation, emoji suffixes) from what's in .env.
-        bot_name = self._config.bot_display_name.strip()
-        if bot_name and (
-            msg["sender_name"].strip() == bot_name
-            or bot_name in msg["sender_name"]
-        ):
+        # Backend marks account identity; nickname resemblance must not suppress other members.
+        if msg.get("is_self", False):
             return None
 
         # Always persist the message.
@@ -166,6 +167,18 @@ class MessageRouter:
         )
 
         if is_at:
+            from src.conversation_policy import load_policy
+            with self._mention_lock:
+                key = (msg["chat_id"], msg["sender_id"])
+                window = self._mention_windows.setdefault(key, deque())
+                now = time.monotonic()
+                while window and window[0] < now - 60:
+                    window.popleft()
+                if len(window) >= load_policy()["mention_per_minute"]:
+                    return None
+                window.append(now)
+                if len(self._mention_windows) > 2000:
+                    self._mention_windows = {k:v for k,v in self._mention_windows.items() if v and v[-1] >= now-60}
             # ── @mention path (existing logic) ───────────────────
 
             # Guard: ignore stale @mentions, e.g. historical messages
@@ -203,6 +216,23 @@ class MessageRouter:
             )
 
             reply: Optional[str] = None
+            if re.match(r"^(?:请)?(?:忘掉|忘记|别记|不再记录|删掉)", clean_content.strip()):
+                try:
+                    reply = self._memory.forget_request(msg)
+                except (ValueError, RuntimeError):
+                    reply = "暂时没能安全完成遗忘，请在记忆栏检查本人条目后重试。"
+            if reply is None and re.match(r"^(?:请)?(?:记住|记一下)", clean_content.strip()):
+                try:
+                    reply = self._memory.remember_request(msg)
+                except Exception:
+                    reply = "暂未成功保存，请先检查该群记忆迁移状态与接口，再重试。"
+            if reply is None and re.match(r"^(?:请)?提醒我", clean_content.strip()):
+                reminder = self._parse_reminder(msg, clean_content)
+                if reminder:
+                    msg["authorized_reminder"] = reminder
+                    reply = f"确认：我会在{reminder['when']}提醒你：{reminder['text']}。"
+                else:
+                    reply = "请明确日期与时间，例如：提醒我 2026-10-09 12:00 喂猫。时间明确后我再确认。"
 
             # ── Empty @mention → sticky listening mode ──────────────
             # User sent @bot but nothing else.  Register a sticky so
@@ -246,9 +276,6 @@ class MessageRouter:
         # Carry the exact recipient ID to the Windows sender. Plain @text
         # alone does not create WeChat's native mention metadata.
         if is_at and reply:
-            recorder = getattr(self._proactive, "record_direct_reply", None)
-            if callable(recorder):
-                recorder(msg["chat_id"])
             names = [self._nicks.resolve_name(msg["sender_id"]), msg["sender_name"]]
             for name in names:
                 prefix = f"@{name} "
@@ -259,12 +286,86 @@ class MessageRouter:
         # ── Strip markdown — WeChat can't render it ──────────────
         return self._strip_markdown(reply) if reply else None
 
+    @staticmethod
+    def _parse_reminder(msg, content):
+        import datetime
+        match = re.search(r"提醒我\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+(.+)", content)
+        if not match:
+            return None
+        try:
+            due = datetime.datetime.strptime(match[1], "%Y-%m-%d %H:%M").timestamp()
+        except ValueError:
+            return None
+        if not time.time() < due < time.time() + 366 * 86400:
+            return None
+        return {"due":due,"when":match[1],"text":match[2][:500],"subject_id":msg["sender_id"]}
+
+    def record_delivery(self, msg, confirmed, message_id):
+        callback = msg.get("on_send_result")
+        if callable(callback):
+            callback(confirmed)
+        if confirmed and not msg.get("proactive_reply"):
+            self._proactive.record_direct_reply(msg["chat_id"])
+        reminder = msg.get("authorized_reminder")
+        if confirmed and reminder:
+            with self._store._lock, self._store.conn:
+                self._store.conn.execute("INSERT INTO authorized_reminders(chat_id,subject_id,text,due,status,confirmation_message_id) VALUES(?,?,?,?,?,?)",
+                    (msg["chat_id"],reminder["subject_id"],reminder["text"],reminder["due"],"scheduled",message_id))
+
+    def periodic_memory_tasks(self, backend):
+        def settle_group(chat_id):
+            try:
+                self._memory.maintenance(chat_id)
+            except Exception:
+                logger.warning("Memory maintenance skipped; check migration and provider availability")
+            finally:
+                with self._maintenance_lock:
+                    self._maintenance_running.discard(chat_id)
+        for chat_id in self._store.list_group_ids():
+            with self._maintenance_lock:
+                if chat_id in self._maintenance_running:
+                    continue
+                self._maintenance_running.add(chat_id)
+            threading.Thread(target=settle_group,args=(chat_id,),daemon=True).start()
+        self.check_due_reminders(backend)
+
+    def check_due_reminders(self, backend):
+        with self._maintenance_lock:
+            if self._reminder_running:
+                return
+            self._reminder_running = True
+        def run():
+            try:
+                self._run_due_reminders(backend)
+            except Exception:
+                logger.warning("Reminder scan failed; no automatic resend")
+            finally:
+                with self._maintenance_lock:
+                    self._reminder_running = False
+        threading.Thread(target=run,daemon=True).start()
+
+    def _run_due_reminders(self, backend):
+        if not hasattr(backend, "send_confirmed_text"):
+            return
+        with self._store._lock, self._store.conn:
+            rows = self._store.conn.execute("SELECT * FROM authorized_reminders WHERE status='scheduled' AND due<=?", (time.time(),)).fetchall()
+            for row in rows:
+                self._store.conn.execute("UPDATE authorized_reminders SET status='sending' WHERE id=?", (row["id"],))
+        for row in rows:
+            try:
+                confirmed = backend.send_confirmed_text(row["chat_id"], "提醒："+row["text"])
+            except Exception:
+                confirmed = False
+            with self._store._lock, self._store.conn:
+                self._store.conn.execute("UPDATE authorized_reminders SET status=? WHERE id=?", ("confirmed" if confirmed else "unconfirmed",row["id"]))
+
     # ── Memory helper ────────────────────────────────────────────
 
     def _get_group_memory(self, chat_id: str) -> str:
         """Return the group's memory text, or empty string if none."""
         mem = self._store.get_group_memory(chat_id)
-        return mem["memory_text"] if mem else ""
+        workspace = getattr(getattr(self, "_memory", None), "workspace", None)
+        return workspace.filtered_text(chat_id) if workspace else (mem["memory_text"] if mem else "")
 
     # ── Summary handler ──────────────────────────────────────────
 
@@ -558,6 +659,9 @@ class MessageRouter:
             if episode_phase:
                 chat_kwargs["episode_phase"] = episode_phase
             ai_reply = self._summarizer.proactive_chat(**chat_kwargs)
+            if isinstance(ai_reply, dict):
+                msg["reply_action"] = ai_reply.get("action", "")
+                ai_reply = ai_reply.get("text", "")
             if ai_reply and (re.sub(r"[\W_]+", "", ai_reply).upper() == "SKIP" or len(ai_reply) > policy["proactive_max_chars"]):
                 ai_reply = ""
             if ai_reply and ai_reply.strip() == "[[NEED_GROUP_MEMORY]]":
@@ -588,7 +692,8 @@ class MessageRouter:
             )
             return None
 
-        self._proactive.record_speech(msg["chat_id"])
+        msg["proactive_reply"] = True
+        msg["on_send_result"] = lambda confirmed: self._proactive.record_speech(msg["chat_id"]) if confirmed else self._proactive.record_failure(msg["chat_id"])
         ai_reply = self._nicks.resolve_wxids(ai_reply)
         logger.info(
             "Proactive reply generated: mode=%s len=%d",

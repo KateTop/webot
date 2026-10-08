@@ -200,6 +200,8 @@ class AbstractSummarizer(ABC):
             current_message=message,
             group_memory=memory_display,
         )
+        from src.memory.instructions import base_prompt
+        system_prompt = base_prompt(bot_name) + "\n" + system_prompt
         system_prompt = with_user_instructions(system_prompt, "chat")
 
         # ── 3. Build user message (just the trigger) ──────────────
@@ -384,7 +386,11 @@ class AbstractSummarizer(ABC):
 争议话题可以提问、说明依据与不确定性，不替群友集体表态。
 只输出要发送的话或 SKIP，不输出思考、解释、引号或代码块。
 例：猫吃冻干的话题，可以问“它是拌水还是干吃？”，不要说“大家都在分享养猫经验”。"""
+        from src.memory.instructions import base_prompt
+        system_prompt = base_prompt(bot_name) + "\n" + system_prompt
         system_prompt = with_user_instructions(system_prompt, "proactive")
+        system_prompt += '\n必须返回 JSON {"action":"追问/带细节的回应/接梗/补充经验或信息/表态/反对","text":"发言正文"}，或 SKIP。动作必须在允许范围，不能只输出正文。'
+
         user_prompt = "判断这次是否值得开口；没有新内容就输出 SKIP。"
 
         reply = self._retry_with_backoff(
@@ -399,9 +405,25 @@ class AbstractSummarizer(ABC):
         if re.sub(r"[\W_]+", "", text).upper() == "SKIP":
             return ""
         # Never send a truncated sentence or an accidental essay.
-        if len(text) > policy["proactive_max_chars"]:
+        import json
+        try:
+            value = json.loads(text)
+            allowed = {v.strip() for v in policy["proactive_allowed_moves"].split("、")}
+            if not isinstance(value, dict) or value.get("action") not in allowed or not isinstance(value.get("text"), str):
+                return ""
+            if not value["text"].strip() or len(value["text"]) > policy["proactive_max_chars"]:
+                return ""
+            return value
+        except (ValueError, TypeError):
             return ""
-        return text
+
+    def memory_request(self, task, existing, messages=None, blocks=None, request=None):
+        from src.memory.instructions import protocol_prompt
+        prompt = protocol_prompt(task, existing, messages, blocks, request)
+        result = self._retry_with_backoff(lambda: self._call_protocol_api(prompt), "memory protocol")
+        if not isinstance(result, str) or not result.strip():
+            raise ValueError("记忆响应为空，拒绝推进进度")
+        return result.strip()
 
     @abstractmethod
     def _call_chat_api(self, system_prompt: str,

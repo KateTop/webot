@@ -131,69 +131,13 @@ class ClaudeSummarizer(AbstractSummarizer):
 
     # ── Memory consolidation (Claude backend) ───────────────────────
 
-    def consolidate_memory(self, existing_memory: str,
-                           new_messages: list[dict]) -> str:
-        """Update group memory by incorporating new messages.
+    def consolidate_memory(self, existing_memory: str, new_messages: list[dict]) -> str:
+        from src.memory.document import parse
+        return self.memory_request("write", parse(existing_memory), new_messages)
 
-        Uses Claude Haiku for low cost and latency.  Returns the updated
-        first-person diary-style memory text (≤2000 chars).
-
-        Args:
-            existing_memory: Current memory text (empty string if first time).
-            new_messages: List of new message dicts to incorporate.
-
-        Returns:
-            Updated memory text. API failures propagate to the consolidator.
-        """
-        if not new_messages:
-            return existing_memory
-
-        # Format new messages for the prompt
-        msg_lines = []
-        for m in new_messages[-200:]:  # cap at 200 messages per consolidation
-            sender = m.get("sender_name", "?")
-            content = m.get("content", "")
-            if content:
-                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.get("timestamp") or 0))
-                msg_lines.append(f"[{when}] {sender}: {content}")
-
-        if not msg_lines:
-            return existing_memory
-
-        existing_display = (
-            existing_memory if existing_memory
-            else "（暂无，这是第一次整理记忆）"
-        )
-
-        # 转义消息中的花括号，避免 str.format() 报 KeyError
-        escaped_memory = existing_display.replace("{", "{{").replace("}", "}}")
-        escaped_msgs = "\n".join(msg_lines).replace("{", "{{").replace("}", "}}")
-
-        system_prompt = MEMORY_CONSOLE_PROMPT.format(
-            existing_memory=escaped_memory,
-            new_messages=escaped_msgs,
-        )
-        from .prompt_settings import with_user_instructions
-        system_prompt = with_user_instructions(system_prompt, "memory")
-
-        def call():
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2048,
-                system=system_prompt,
-                messages=[{
-                    "role": "user",
-                    "content": "请输出更新后的完整记忆日记。",
-                }],
-            )
-            text = response.content[0].text or ""
-            # Enforce 2000-char soft cap
-            if len(text) > 2000:
-                text = text[:2000]
-            return text.strip()
-
-        try:
-            return self._retry_with_backoff(call, "memory consolidation")
-        except RuntimeError as e:
-            logger.warning("Memory consolidation failed: %s", e)
-            raise
+    def _call_protocol_api(self, prompt):
+        response = self.client.messages.create(model=self.model, max_tokens=8192, system=prompt,
+            messages=[{"role": "user", "content": "请按协议返回结果"}])
+        if response.stop_reason != "end_turn":
+            raise ValueError("记忆响应未正常结束，拒绝推进进度")
+        return "".join(block.text for block in response.content if getattr(block, "type", None) == "text")

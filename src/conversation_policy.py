@@ -15,7 +15,13 @@ DEFAULT_POLICY = {
     "topic_min_messages": 8,
     "topic_similarity": 0.12,
     "memory_settle_sec": 600,
-    "memory_min_messages": 12,
+    "memory_min_messages": 15,
+    "memory_body_max_chars": 2000,
+    "memory_fallback_sec": 21600,
+    "memory_tail_sec": 600,
+    "mention_per_minute": 3,
+    "send_delay_min_sec": 1,
+    "send_delay_max_sec": 3,
     "proactive_min_messages": 8,
     "proactive_min_participants": 2,
     "proactive_min_age_sec": 45,
@@ -54,6 +60,12 @@ LIMITS = {
     "topic_similarity": (0.0, 0.8),
     "memory_settle_sec": (60, 3600),
     "memory_min_messages": (2, 100),
+    "memory_body_max_chars": (500, 10000),
+    "memory_fallback_sec": (3600, 86400),
+    "memory_tail_sec": (60, 1800),
+    "mention_per_minute": (1, 60),
+    "send_delay_min_sec": (0, 10),
+    "send_delay_max_sec": (0, 10),
     "proactive_min_messages": (2, 100),
     "proactive_min_participants": (1, 20),
     "proactive_min_age_sec": (0, 600),
@@ -90,6 +102,8 @@ def _validate(values: dict) -> dict:
                 raise ValueError(f"{key} 必须是整数")
             value = float(value) if key == "topic_similarity" else int(value)
         result[key] = value
+    if result["send_delay_min_sec"] > result["send_delay_max_sec"]:
+        raise ValueError("发送延迟下限不能超过上限")
     return result
 
 
