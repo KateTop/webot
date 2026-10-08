@@ -990,7 +990,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         # Only delegate specific API paths; return 405 for unknown POST paths
         if self.path in ("/api/config", "/api/config/import", "/api/prompts", "/api/start", "/api/stop",
-                         "/api/memory/save", "/api/memory/create", "/api/memory/consolidate",
+                         "/api/monitor/clear", "/api/memory/save", "/api/memory/create", "/api/memory/consolidate",
                          "/api/memory/migrate", "/api/memory/restore", "/api/memory/blocks", "/api/memory/settle", "/api/memory/reminder-cancel",
                          "/api/conversation-policy",
                          "/api/nicknames",
@@ -1033,6 +1033,23 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True, "policy": policy})
             except (ValueError, OSError, json.JSONDecodeError) as exc:
                 self.send_json({"ok": False, "error": str(exc)})
+            return
+        if parsed_path.path in ("/api/monitor", "/api/monitor/clear"):
+            origin = self.headers.get("Origin", "")
+            if (self.client_address[0] not in ("127.0.0.1", "::1") or
+                    (origin and _urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"))):
+                self.send_json({"ok":False,"error":"Local request required"})
+                return
+            from src.monitor import monitor
+            if parsed_path.path == "/api/monitor/clear":
+                if self.command != "POST":
+                    self.send_json({"ok":False,"error":"POST required"})
+                    return
+                monitor.clear()
+                self.send_json({"ok":True})
+            else:
+                trace = _parse_qs(parsed_path.query).get("id", [None])[0]
+                self.send_json({"ok":True,"records":monitor.snapshot(trace)})
             return
         if parsed_path.path.startswith("/api/memory"):
             origin = self.headers.get("Origin", "")

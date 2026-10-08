@@ -106,12 +106,30 @@ class MessageRouter:
             self._memory.check_and_consolidate(chat_id)
 
     def handle(self, msg: dict) -> Optional[str]:
+        from src.monitor import monitor, current_trace
+        trace = monitor.begin(msg)
+        msg["monitor_trace"] = trace
+        token = current_trace.set(trace)
+        try:
+            reply = self._handle_monitored(msg)
+            monitor.event("最终回复" if reply else "结束处理", {"text":reply, "action":msg.get("reply_action", ""),
+                "note":"等待发送与微信库确认" if reply else "未产生可发送回复"}, status="待发送" if reply else "未回复")
+            return reply
+        except Exception as exc:
+            monitor.event("处理失败", {"error_type":type(exc).__name__}, status="处理失败")
+            raise
+        finally:
+            current_trace.reset(token)
+
+    def _handle_monitored(self, msg: dict) -> Optional[str]:
         """Process an incoming group chat message.
 
         Returns reply text if a reply should be sent, or None.
         """
         # Backend marks account identity; nickname resemblance must not suppress other members.
         if msg.get("is_self", False):
+            from src.monitor import monitor
+            monitor.event("规则判断", "本账号消息，不触发回复")
             return None
 
         # Always persist the message.
@@ -138,6 +156,8 @@ class MessageRouter:
                         "Ignoring stale join event for '%s' (age=%ds, max=%ds)",
                         msg.get("new_member_id", "?"), msg_age, WELCOME_MAX_AGE_SEC,
                     )
+            from src.monitor import monitor
+            monitor.event("规则判断", "重复消息或入库失败")
             return None  # Duplicate or DB error — nothing more to do
         self.messages_processed += 1
         observer = getattr(self._proactive, "observe", None)
@@ -166,6 +186,8 @@ class MessageRouter:
             and self._sticky.consume(msg["chat_id"], msg["sender_id"])
         )
 
+        from src.monitor import monitor
+        monitor.event("路由判断", {"channel":"艾特/引用/粘性提及" if is_at else "主动发言"})
         if is_at:
             from src.conversation_policy import load_policy
             with self._mention_lock:
@@ -175,6 +197,7 @@ class MessageRouter:
                 while window and window[0] < now - 60:
                     window.popleft()
                 if len(window) >= load_policy()["mention_per_minute"]:
+                    monitor.event("规则拦截", "该成员每分钟提及次数达到上限")
                     return None
                 window.append(now)
                 if len(self._mention_windows) > 2000:
@@ -186,6 +209,7 @@ class MessageRouter:
             # WeChat message timestamps are Unix seconds.
             msg_age_sec = int(time.time()) - msg.get("timestamp", 0)
             if msg_age_sec > AT_MENTION_MAX_AGE_SEC:
+                monitor.event("规则拦截", "过期提及消息")
                 logger.info(
                     "Ignoring stale @mention from '%s' (age=%ds, max=%ds)",
                     msg["sender_name"], msg_age_sec, AT_MENTION_MAX_AGE_SEC,
@@ -268,6 +292,7 @@ class MessageRouter:
         else:
             # ── Proactive path (rate-based ambient participation) ─
             should_speak, mode, reason = self._proactive.should_speak(msg)
+            monitor.event("主动时机判断", {"allowed":should_speak,"reason":reason})
             if should_speak and mode is not None:
                 reply = self._handle_proactive_chat(msg, mode)
             else:
@@ -301,6 +326,9 @@ class MessageRouter:
         return {"due":due,"when":match[1],"text":match[2][:500],"subject_id":msg["sender_id"]}
 
     def record_delivery(self, msg, confirmed, message_id):
+        from src.monitor import monitor
+        monitor.event("微信库确认", {"confirmed":confirmed,"message_id":message_id}, msg.get("monitor_trace"),
+            status="已确认发送" if confirmed else "发送失败或未确认")
         callback = msg.get("on_send_result")
         if callable(callback):
             callback(confirmed)

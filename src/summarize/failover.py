@@ -20,9 +20,12 @@ class FailoverSummarizer:
 
     def _call(self, method: str, *args, **kwargs):
         for index, (name, provider) in enumerate(self.providers):
+            from src.monitor import monitor
+            monitor.event("AI池选择", {"provider":name,"model":getattr(provider,"model",""),"task":method})
             try:
                 return getattr(provider, method)(*args, **kwargs)
             except BackendTransientError as error:
+                monitor.event("AI池轮换", {"provider":name,"next":self.providers[index+1][0] if index+1<len(self.providers) else None})
                 if index == len(self.providers) - 1:
                     raise
                 cause = error.__cause__

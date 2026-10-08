@@ -65,7 +65,7 @@ class ClaudeSummarizer(AbstractSummarizer):
     def _call_chat_api(self, system_prompt: str,
                         messages: list[dict]) -> str:
         """Claude-specific: uses client.messages.create() with system param."""
-        response = self.client.messages.create(
+        response = self._monitored_create(self.client.messages.create,
             model=self.model,
             max_tokens=400,
             system=system_prompt,
@@ -81,7 +81,7 @@ class ClaudeSummarizer(AbstractSummarizer):
         user_prompt = build_summary_prompt(messages, requester_name)
 
         def call():
-            response = self.client.messages.parse(
+            response = self._monitored_create(self.client.messages.parse,
                 model=self.model,
                 max_tokens=8192,
                 system=with_user_instructions(SYSTEM_PROMPT, "summary"),
@@ -102,7 +102,7 @@ class ClaudeSummarizer(AbstractSummarizer):
         )
 
         def call():
-            response = self.client.messages.create(
+            response = self._monitored_create(self.client.messages.create,
                 model=self.model,
                 max_tokens=1024,
                 system=with_user_instructions(CHUNK_SYSTEM_PROMPT, "summary"),
@@ -118,7 +118,7 @@ class ClaudeSummarizer(AbstractSummarizer):
         user_prompt = build_merge_prompt(chunk_summaries, requester_name)
 
         def call():
-            response = self.client.messages.parse(
+            response = self._monitored_create(self.client.messages.parse,
                 model=self.model,
                 max_tokens=8192,
                 system=with_user_instructions(MERGE_SYSTEM_PROMPT, "summary"),
@@ -136,7 +136,7 @@ class ClaudeSummarizer(AbstractSummarizer):
         return self.memory_request("write", parse(existing_memory), new_messages)
 
     def _call_protocol_api(self, prompt):
-        response = self.client.messages.create(model=self.model, max_tokens=8192, system=prompt,
+        response = self._monitored_create(self.client.messages.create,model=self.model, max_tokens=8192, system=prompt,
             messages=[{"role": "user", "content": "请按协议返回结果"}])
         if response.stop_reason != "end_turn":
             raise ValueError("记忆响应未正常结束，拒绝推进进度")

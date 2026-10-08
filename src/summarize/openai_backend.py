@@ -219,7 +219,7 @@ class OpenAISummarizer(AbstractSummarizer):
         """OpenAI-compatible: uses chat.completions.create() with system role."""
         api_messages = [{"role": "system", "content": system_prompt}] + messages
         search_tools = [{"type": "web_search"}] if self.web_search else None
-        response = self.client.chat.completions.create(
+        response = self._monitored_create(self.client.chat.completions.create,
             model=self.model,
             max_tokens=400,
             messages=api_messages,
@@ -238,7 +238,7 @@ class OpenAISummarizer(AbstractSummarizer):
         user_prompt = build_summary_prompt(messages, requester_name)
 
         def call():
-            response = self.client.chat.completions.create(
+            response = self._monitored_create(self.client.chat.completions.create,
                 model=self.model,
                 max_tokens=8192,
                 messages=[
@@ -263,7 +263,7 @@ class OpenAISummarizer(AbstractSummarizer):
         )
 
         def call():
-            response = self.client.chat.completions.create(
+            response = self._monitored_create(self.client.chat.completions.create,
                 model=self.model,
                 max_tokens=1024,
                 messages=[
@@ -282,7 +282,7 @@ class OpenAISummarizer(AbstractSummarizer):
         return self.memory_request("write", parse(existing_memory), new_messages)
 
     def _call_protocol_api(self, prompt):
-        response = self.client.chat.completions.create(model=self.model, max_tokens=8192,
+        response = self._monitored_create(self.client.chat.completions.create,model=self.model, max_tokens=8192,
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "请按协议返回结果"}],
             extra_body=self._extra_body())
         if not response.choices or response.choices[0].finish_reason != "stop":
@@ -297,7 +297,7 @@ class OpenAISummarizer(AbstractSummarizer):
         user_prompt = build_merge_prompt(chunk_summaries, requester_name)
 
         def call():
-            response = self.client.chat.completions.create(
+            response = self._monitored_create(self.client.chat.completions.create,
                 model=self.model,
                 max_tokens=8192,
                 messages=[

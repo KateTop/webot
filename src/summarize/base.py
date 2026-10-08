@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, TypeVar
 
 from .models import SummaryResult
+from src.monitor import monitor_task
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,7 @@ class AbstractSummarizer(ABC):
 
         # ── 4. Call AI API (backend-specific) ─────────────────────
         return self._retry_with_backoff(
-            lambda: self._call_chat_api(
+            lambda: self._monitored_chat_api(
                 system_prompt,
                 [{"role": "user", "content": user_prompt}],
             ),
@@ -394,7 +395,7 @@ class AbstractSummarizer(ABC):
         user_prompt = "判断这次是否值得开口；没有新内容就输出 SKIP。"
 
         reply = self._retry_with_backoff(
-            lambda: self._call_chat_api(
+            lambda: self._monitored_chat_api(
                 system_prompt,
                 [{"role": "user", "content": user_prompt}],
             ),
@@ -403,6 +404,8 @@ class AbstractSummarizer(ABC):
         text = reply.strip() if reply else ""
         import re
         if re.sub(r"[\W_]+", "", text).upper() == "SKIP":
+            from src.monitor import monitor
+            monitor.event("模型判断", "SKIP：模型选择保持沉默")
             return ""
         # Never send a truncated sentence or an accidental essay.
         import json
@@ -410,20 +413,49 @@ class AbstractSummarizer(ABC):
             value = json.loads(text)
             allowed = {v.strip() for v in policy["proactive_allowed_moves"].split("、")}
             if not isinstance(value, dict) or value.get("action") not in allowed or not isinstance(value.get("text"), str):
+                from src.monitor import monitor
+                monitor.event("动作拒收", "结构不合格或动作未开放，丢弃回复")
                 return ""
             if not value["text"].strip() or len(value["text"]) > policy["proactive_max_chars"]:
+                from src.monitor import monitor
+                monitor.event("动作拒收", "正文为空或超过字数上限")
                 return ""
+            from src.monitor import monitor
+            monitor.event("动作验收", {"action":value["action"],"accepted":True})
             return value
         except (ValueError, TypeError):
+            from src.monitor import monitor
+            monitor.event("动作拒收", "响应不是有效动作JSON")
             return ""
 
+    @monitor_task("后台记忆调用（AI完成不代表记忆已提交）")
     def memory_request(self, task, existing, messages=None, blocks=None, request=None):
         from src.memory.instructions import protocol_prompt
         prompt = protocol_prompt(task, existing, messages, blocks, request)
-        result = self._retry_with_backoff(lambda: self._call_protocol_api(prompt), "memory protocol")
+        from src.monitor import observed_call
+        result = self._retry_with_backoff(lambda: observed_call(self, "记忆:" + task, prompt, [],
+            lambda: self._call_protocol_api(prompt)), "memory protocol")
         if not isinstance(result, str) or not result.strip():
             raise ValueError("记忆响应为空，拒绝推进进度")
         return result.strip()
+
+    def _monitored_create(self, create, **kwargs):
+        # Capture only request body fields; never clients, headers or credentials.
+        from src.monitor import monitor
+        monitor.event("AI实际输入", {k:kwargs[k] for k in ("model", "system", "messages", "max_tokens") if k in kwargs})
+        start = time.monotonic()
+        try:
+            response = create(**kwargs)
+            monitor.event("接口返回", {"seconds":round(time.monotonic()-start,3)})
+            return response
+        except Exception as exc:
+            monitor.event("接口失败", {"error_type":type(exc).__name__,"seconds":round(time.monotonic()-start,3)})
+            raise
+
+    def _monitored_chat_api(self, system_prompt, messages):
+        from src.monitor import observed_call
+        return observed_call(self, "群聊回复", system_prompt, messages,
+            lambda: self._call_chat_api(system_prompt, messages))
 
     @abstractmethod
     def _call_chat_api(self, system_prompt: str,
@@ -664,6 +696,8 @@ class AbstractSummarizer(ABC):
                 if attempt == self.max_retries:
                     break
                 wait = min(2 ** attempt, 16)
+                from src.monitor import monitor
+                monitor.event("重试等待", {"task":label,"attempt":attempt,"max_attempts":self.max_retries,"wait_seconds":wait})
                 logger.warning(
                     "Transient error on '%s' (attempt %d/%d). "
                     "Waiting %ds... (%s)",

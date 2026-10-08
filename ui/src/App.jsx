@@ -5,6 +5,7 @@ import Dashboard from './components/Dashboard'
 import ConfigPanel from './components/ConfigPanel'
 import FeaturesPanel from './components/FeaturesPanel'
 import MemoryPanel from './components/MemoryPanel'
+import MonitorPanel from './components/MonitorPanel'
 import LogViewer from './components/LogViewer'
 import SendFailures from './components/SendFailures'
 import Onboarding from './components/Onboarding'
@@ -37,6 +38,7 @@ const TABS = [
   },
   { id: 'memory', label: '记忆', icon: Brain },
   { id: 'send-failures', label: '发送记录', icon: PaperPlaneTilt },
+  { id: 'monitor', label: 'Bot 监视', icon: ChartLine },
   { id: 'logs', label: '运行日志', icon: Scroll },
 ]
 
@@ -289,6 +291,7 @@ export default function App() {
             {activeTab === 'features' && <FeaturesPanel activeSection={featuresSection} onNavigate={setFeaturesSection} />}
             {activeTab === 'memory' && <MemoryPanel />}
             {activeTab === 'send-failures' && <SendFailures />}
+            {activeTab === 'monitor' && <MonitorPanel />}
             {activeTab === 'logs' && <LogViewer />}
           </motion.div>
         </AnimatePresence>

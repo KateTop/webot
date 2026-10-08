@@ -571,6 +571,8 @@ class WcdbBackend(AbstractWeChatBackend):
                 # _send_and_confirm uses window_controller (keyboard), not
                 # _client (WCDB).  Don't hold _client_lock during send —
                 # it blocks the poll loop from reading new messages.
+                from src.monitor import monitor
+                monitor.event("执行发送", {"text":reply,"native_mention":bool(standardized.get("reply_mention"))}, standardized.get("monitor_trace"))
                 success = self.send_confirmed_text(talker, reply,
                     mention=standardized.get("reply_mention"), action=standardized.get("reply_action", ""))
                 callback_result = getattr(self, "on_delivery", None)
@@ -587,6 +589,8 @@ class WcdbBackend(AbstractWeChatBackend):
                         group_name,
                     )
         except Exception:
+            from src.monitor import monitor
+            monitor.event("发送或回调失败", "请检查发送记录与运行日志", standardized.get("monitor_trace"), status="失败")
             logger.exception(
                 "Unhandled error in callback worker (group='%s', sender='%s')",
                 group_name, standardized.get("sender_name", "?"),
