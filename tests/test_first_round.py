@@ -56,7 +56,7 @@ def test_partial_settings_save_preserves_other_sections(tmp_path):
 def test_prompt_settings_persist_and_validate(tmp_path):
     with patch.object(prompt_settings, "PROMPT_FILE", tmp_path / "prompts.json"):
         assert prompt_settings.save_prompt_settings({"chat": "回答简短", "summary": "列出待办"}) == {
-            "chat": "回答简短", "summary": "列出待办", "memory": ""}
+            "chat": "回答简短", "summary": "列出待办", "memory": "", "persona": "", "proactive": ""}
         assert prompt_settings.load_prompt_settings()["chat"] == "回答简短"
         assert "回答简短" in prompt_settings.with_user_instructions("默认", "chat")
         with pytest.raises(ValueError):

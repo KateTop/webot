@@ -142,7 +142,7 @@ def test_chat_instruction_reaches_proactive_and_direct_reply():
     seen = []
     provider._call_chat_api = lambda prompt, messages: seen.append(prompt) or 'ok'
     with patch('src.summarize.prompt_settings.load_prompt_settings',
-               return_value={'chat': '使用自定义语气', 'summary': '分点总结'}):
+               return_value={'chat': '使用自定义语气', 'summary': '分点总结', 'proactive': '只追问细节'}):
         provider.chat('你好')
         provider.proactive_chat(
             SimpleNamespace(context_count=1, label='一般', description='一般',
@@ -150,7 +150,9 @@ def test_chat_instruction_reaches_proactive_and_direct_reply():
             [{'sender_name': '甲', 'content': '你好'}],
         )
     assert len(seen) == 2
-    assert all('使用自定义语气' in prompt for prompt in seen)
+    assert '使用自定义语气' in seen[0]
+    assert '使用自定义语气' not in seen[1]
+    assert '只追问细节' in seen[1]
     assert all('分点总结' not in prompt for prompt in seen)
 
 
@@ -175,7 +177,7 @@ def test_proactive_uses_configured_recent_count():
     )
     mode = SimpleNamespace(name='CASUAL')
     assert MessageRouter._handle_proactive_chat(router, {'chat_id': 'g', 'timestamp': 123}, mode) == '接话'
-    assert seen['query'] == ('g', 123, 23)
+    assert seen['query'] == ('g', 123, 40)
     assert seen['reply']['group_memory'] == ''
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from src.config import PROJECT_ROOT
 
 PROMPT_FILE = PROJECT_ROOT / "data" / "prompts.json"
-PROMPT_FIELDS = ("chat", "summary", "memory")
+PROMPT_FIELDS = ("chat", "summary", "memory", "persona", "proactive")
 _lock = threading.Lock()
 logger = logging.getLogger(__name__)
 

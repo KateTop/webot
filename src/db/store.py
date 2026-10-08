@@ -11,6 +11,7 @@ import time
 import logging
 import hashlib
 import os
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,19 @@ class MessageStore:
         self._trigger_count = 0
         database = conn.execute("PRAGMA database_list").fetchone()[2]
         self._memory_root = Path(database).resolve().parent / "memory" if database else None
+        conn.execute("CREATE TABLE IF NOT EXISTS proactive_state (chat_id TEXT PRIMARY KEY, state TEXT NOT NULL)")
+        conn.commit()
+
+    def get_proactive_state(self, chat_id: str) -> dict:
+        with self._lock:
+            row = self.conn.execute("SELECT state FROM proactive_state WHERE chat_id=?", (chat_id,)).fetchone()
+            return json.loads(row[0]) if row else {}
+
+    def save_proactive_state(self, chat_id: str, state: dict) -> None:
+        with self._lock:
+            self.conn.execute("INSERT OR REPLACE INTO proactive_state VALUES (?, ?)",
+                              (chat_id, json.dumps(state)))
+            self.conn.commit()
 
     def _soul_path(self, chat_id: str) -> Path | None:
         if self._memory_root is None:

@@ -20,12 +20,34 @@ DEFAULT_POLICY = {
     "proactive_min_participants": 2,
     "proactive_min_age_sec": 45,
     "proactive_min_new_messages": 10,
-    "proactive_cooldown_sec": 300,
+    "proactive_cooldown_sec": 3600,
     "proactive_max_replies": 2,
     "proactive_phases": "rising_peak",
+    "proactive_daily_limit": 6,
+    "proactive_eval_sec": 300,
+    "proactive_context_count": 40,
+    "proactive_max_chars": 80,
+    "proactive_quiet_start": 0,
+    "proactive_quiet_end": 8,
+    "proactive_feedback_sec": 600,
+    "proactive_feedback_messages": 5,
+    "proactive_ignored_limit": 3,
+    "proactive_allowed_moves": "追问、带细节的回应",
+    "proactive_trigger_words": "觉得、认为、怎么看、为什么、喜欢、好吃、分享、推荐、猫、狗、宠物、美食、？、?",
+    "proactive_resume_gap_sec": 120,
 }
 
 LIMITS = {
+    "proactive_resume_gap_sec": (30, 3600),
+    "proactive_daily_limit": (0, 100),
+    "proactive_eval_sec": (30, 7200),
+    "proactive_context_count": (10, 100),
+    "proactive_max_chars": (20, 160),
+    "proactive_quiet_start": (0, 23),
+    "proactive_quiet_end": (0, 23),
+    "proactive_feedback_sec": (60, 3600),
+    "proactive_feedback_messages": (1, 30),
+    "proactive_ignored_limit": (1, 10),
     "episode_gap_sec": (60, 3600),
     "episode_max_messages": (20, 100),
     "topic_min_messages": (3, 50),
@@ -52,7 +74,10 @@ def _validate(values: dict) -> dict:
     for key, value in values.items():
         if key not in result:
             continue
-        if key == "proactive_phases":
+        if key in ("proactive_allowed_moves", "proactive_trigger_words"):
+            if not isinstance(value, str) or not value.strip() or len(value) > 200:
+                raise ValueError("允许的插话方式需为 1–200 字文本")
+        elif key == "proactive_phases":
             if value not in ("rising_peak", "all_active"):
                 raise ValueError("主动发言阶段无效")
         else:

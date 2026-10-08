@@ -139,6 +139,9 @@ class MessageRouter:
                     )
             return None  # Duplicate or DB error — nothing more to do
         self.messages_processed += 1
+        observer = getattr(self._proactive, "observe", None)
+        if callable(observer):
+            observer(msg)
 
         # Check memory consolidation trigger (fast no-op unless threshold hit)
         self._memory.check_and_consolidate(msg["chat_id"])
@@ -243,6 +246,9 @@ class MessageRouter:
         # Carry the exact recipient ID to the Windows sender. Plain @text
         # alone does not create WeChat's native mention metadata.
         if is_at and reply:
+            recorder = getattr(self._proactive, "record_direct_reply", None)
+            if callable(recorder):
+                recorder(msg["chat_id"])
             names = [self._nicks.resolve_name(msg["sender_id"]), msg["sender_name"]]
             for name in names:
                 prefix = f"@{name} "
@@ -504,10 +510,9 @@ class MessageRouter:
         """
         now = int(time.time())
 
-        # The same user-configured recent-message window is used for all
-        # conversational replies. Include the current message for ambient chat.
-        count = max(1, min(max(getattr(self._config, "chat_context_count", 30),
-                               getattr(mode, "context_count", 0)), 100))
+        from src.conversation_policy import load_policy
+        policy = load_policy()
+        count = policy["proactive_context_count"]
         episode_context = getattr(self._proactive, "episode_context", None)
         episode_phase = ""
         if callable(episode_context):
@@ -543,9 +548,18 @@ class MessageRouter:
                 group_name=msg.get("group_name", msg.get("chat_id", "群聊")),
                 group_memory="",
             )
+            feedback = getattr(self._proactive, "participation_context", None)
+            if callable(feedback):
+                reaction, reason = feedback(msg["chat_id"])
+                chat_kwargs["participation_feedback"] = reaction
+                chat_kwargs["participation_reason"] = reason
+                from src.proactive.memory_context import select_memory
+                chat_kwargs["group_memory"] = select_memory(self._get_group_memory(msg["chat_id"]), context)
             if episode_phase:
                 chat_kwargs["episode_phase"] = episode_phase
             ai_reply = self._summarizer.proactive_chat(**chat_kwargs)
+            if ai_reply and (re.sub(r"[\W_]+", "", ai_reply).upper() == "SKIP" or len(ai_reply) > policy["proactive_max_chars"]):
+                ai_reply = ""
             if ai_reply and ai_reply.strip() == "[[NEED_GROUP_MEMORY]]":
                 memory = self._get_group_memory(msg["chat_id"])
                 if memory:
@@ -577,8 +591,8 @@ class MessageRouter:
         self._proactive.record_speech(msg["chat_id"])
         ai_reply = self._nicks.resolve_wxids(ai_reply)
         logger.info(
-            "Proactive reply: mode=%s len=%d → '%s'",
-            mode.name, len(ai_reply), ai_reply[:40],
+            "Proactive reply generated: mode=%s len=%d",
+            mode.name, len(ai_reply),
         )
         # No @prefix — bot speaks as a natural group member
         return ai_reply

@@ -33,7 +33,7 @@ function AiSection({ form, update }) {
   const isDeepSeek = form.ai_backend === 'deepseek'
   const isOpenAI = form.ai_backend === 'openai'
   const isCustom = form.ai_backend === 'custom'
-  const [prompts, setPrompts] = useState({ chat: '', summary: '' })
+  const [prompts, setPrompts] = useState({ chat: '', summary: '', persona: '', proactive: '' })
   const [promptStatus, setPromptStatus] = useState('')
 
   useEffect(() => {
@@ -128,11 +128,11 @@ function AiSection({ form, update }) {
       )}
       <div className="mt-7 border-t border-border-main pt-5">
         <h4 className="text-sm font-semibold mb-2">自定义 Prompt</h4>
-        <p className="text-xs mb-4">问答指令适用于艾特、引用和自动回复；总结指令适用于短篇与长篇群聊总结。追加到内置指令，修改后下次 AI 调用生效。</p>
-        {['chat', 'summary'].map(key => (
-          <Field key={key} label={key === 'chat' ? '群聊问答指令' : '群聊总结指令'}>
+        <p className="text-xs mb-4">问答指令适用于艾特和引用；主动发言使用独立指令；总结指令适用于短篇与长篇群聊总结。追加到内置指令，修改后下次 AI 调用生效。</p>
+        {['persona', 'proactive', 'chat', 'summary'].map(key => (
+          <Field key={key} label={{ persona: '助手性格与品味', proactive: '主动发言指令', chat: '群聊问答指令', summary: '群聊总结指令' }[key]}>
             <textarea className="w-full min-h-28 rounded-xl border border-border-main bg-bg-card p-3 text-sm text-text-main"
-              value={prompts[key]} maxLength={12000}
+              value={prompts[key] || ''} maxLength={12000}
               onChange={e => setPrompts(prev => ({ ...prev, [key]: e.target.value }))}
               placeholder={key === 'chat' ? '例如：回答群聊历史问题时，说明依据和时间。' : '例如：先列出结论，再列出待办事项。'} />
           </Field>

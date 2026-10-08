@@ -57,9 +57,12 @@ def test_auto_memory_waits_for_settled_batch_and_file_creation(tmp_path, monkeyp
         conn.close()
 
 
-def test_proactive_requires_episode_and_reserves_one_ai_attempt():
+def test_proactive_requires_episode_and_reserves_one_ai_attempt(tmp_path, monkeypatch):
+    from src import conversation_policy
+    monkeypatch.setattr(conversation_policy, "POLICY_FILE", tmp_path / "policy.json")
+    conversation_policy.save_policy({"proactive_quiet_start": 0, "proactive_quiet_end": 0})
     now = int(time.time())
-    rows = [_row(i, now - 90 + i * 10, "我们正在聊今天的电影", "a" if i % 2 else "b")
+    rows = [_row(i, now - 90 + i * 10, "我们觉得今天的电影好看", "a" if i % 2 else "b")
             for i in range(10)]
     store = SimpleNamespace(get_recent_messages=lambda *args, **kwargs: list(rows))
     config = SimpleNamespace(proactive_enabled=True, proactive_rate_window_sec=120,

@@ -1,14 +1,11 @@
-"""ProactiveGate — decides whether the bot should evaluate speaking.
-
-Combines message rate tracking, mode lookup, per-mode evaluation
-intervals, and probabilistic gating.  Pure heuristic — zero AI cost
-for the 99% of messages that get filtered out before reaching the AI.
-"""
+"""Rule-filtered speaking opportunities with persistent group pacing and feedback."""
 
 import logging
 import random
 import threading
 import time
+from datetime import datetime
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .modes import lookup_mode, ProactiveMode
@@ -22,19 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class ProactiveGate:
-    """Multi-level gate for proactive chat participation.
-
-    On every message (without @mention), the gate:
-    1. Records the message for rate tracking
-    2. Computes current message rate
-    3. Looks up the corresponding mode
-    4. Checks if the evaluation interval has elapsed
-    5. Rolls the dice against the mode's reply probability
-
-    Only when ALL gates pass does it return a mode for the handler
-    to call the AI with.  No daily limit, no hard cooldown — the
-    per-mode interval + probability provides natural pacing.
-    """
+    """Filter candidates; the AI must still find a useful contribution or SKIP."""
 
     def __init__(self, config: "BotConfig", store=None):
         self._config = config
@@ -47,6 +32,7 @@ class ProactiveGate:
         self._consecutive_silence: dict[str, int] = {}
         self._call_count: int = 0
         self._episodes: dict[str, dict] = {}
+        self._participation: dict[str, dict] = {}
 
     def should_speak(self, msg: dict) -> tuple[bool, ProactiveMode | None, str]:
         with self._lock:
@@ -92,46 +78,24 @@ class ProactiveGate:
         rate = self._tracker.rate(chat_id)
         mode = lookup_mode(rate, self._config)
 
-        if mode.name == "SLEEP":
-            logger.debug(
-                "Proactive: rate=%.1f/min → SLEEP (chat=%s)",
-                rate, chat_id[:20],
-            )
-            return False, None, f"rate {rate:.1f}/min → SLEEP"
-
-        # ── Gate 3: evaluation interval (with silence backoff) ───
-        now = time.time()
-        last = self._last_eval.get(chat_id, 0)
-        elapsed = now - last
-        # Exponential backoff: each consecutive silence doubles the
-        # effective interval, capped at 16x.  During prolonged crises
-        # this prevents burning API tokens every 2-8 minutes on calls
-        # that all return empty.
-        consecutive = self._consecutive_silence.get(chat_id, 0)
-        backoff = min(2 ** consecutive, 16)
-        effective_interval = mode.eval_interval_sec * backoff
-        if elapsed < effective_interval:
-            logger.debug(
-                "Proactive: eval interval not met (%.0fs < %ds, mode=%s, "
-                "backoff=%dx, consecutive_silence=%d)",
-                elapsed, effective_interval, mode.name,
-                backoff, consecutive,
-            )
-            return False, None, (
-                f"eval interval ({elapsed:.0f}s < {effective_interval}s, "
-                f"backoff={backoff}x)"
-            )
-
-        # ── Gate 4: reply probability ─────────────────────────────
-        roll = random.random()
-        if roll > mode.reply_probability:
-            logger.debug(
-                "Proactive: probability miss (%.2f > %.2f, mode=%s)",
-                roll, mode.reply_probability, mode.name,
-            )
-            # Update last_eval so we don't hammer the probability gate
-            self._last_eval[chat_id] = now
-            return False, None, f"probability miss ({roll:.2f} > {mode.reply_probability})"
+        if self._store is not None:
+            from src.conversation_policy import load_policy
+            policy = load_policy()
+            now = time.time()
+            if now - self._last_eval.get(chat_id, 0) < policy["proactive_eval_sec"] * 2 ** min(self._consecutive_silence.get(chat_id, 0), 4):
+                return False, None, "evaluation backoff"
+            # Activity describes the atmosphere, never increases the chance of interrupting.
+            mode = replace(mode, max_chars=policy["proactive_max_chars"],
+                           context_count=policy["proactive_context_count"])
+        else:
+            if mode.name == "SLEEP":
+                return False, None, "sleep"
+            now = time.time()
+            if now - self._last_eval.get(chat_id, 0) < mode.eval_interval_sec:
+                return False, None, "evaluation interval"
+            if random.random() > mode.reply_probability:
+                self._last_eval[chat_id] = now
+                return False, None, "probability miss"
 
         # ── All gates passed ──────────────────────────────────────
         self._last_eval[chat_id] = now
@@ -185,14 +149,88 @@ class ProactiveGate:
             return False, "episode too young"
         if state["replies"] >= policy["proactive_max_replies"]:
             return False, "episode reply budget reached"
+        allowed, reason = self._participation_gate(msg, policy, episode)
+        if not allowed:
+            return False, reason
         if state["last_speech_at"]:
-            if now - state["last_speech_at"] < policy["proactive_cooldown_sec"]:
-                return False, "episode cooldown"
             if episode["count"] - state["last_speech_count"] < policy["proactive_min_new_messages"]:
                 return False, "not enough new turns"
         if policy["proactive_phases"] == "rising_peak" and phase == "falling":
             return False, "conversation cooling"
         return True, f"episode {phase}"
+
+    def _group_state(self, chat_id):
+        if chat_id not in self._participation:
+            loader = getattr(self._store, "get_proactive_state", None)
+            self._participation[chat_id] = loader(chat_id) if callable(loader) else {}
+        return self._participation[chat_id]
+
+    def _save_group(self, chat_id):
+        saver = getattr(self._store, "save_proactive_state", None)
+        if callable(saver):
+            saver(chat_id, self._group_state(chat_id))
+
+    def observe(self, msg):
+        """Only an explicit @ or quote is evidence of engagement, never proximity."""
+        from src.conversation_policy import load_policy
+        with self._lock:
+            state = self._group_state(msg["chat_id"])
+            policy = load_policy()
+            pending = state.get("feedback")
+            if not pending or msg.get("timestamp", 0) <= pending["at"]:
+                return
+            if msg.get("is_at_mentioned") or msg.get("quotes_bot"):
+                state["ignored"] = 0
+                state["feedback"] = None
+                state["reaction"] = "有人艾特或引用回应；不能证明针对哪次插话"
+            else:
+                pending["seen"] += 1
+                if pending["seen"] >= policy["proactive_feedback_messages"] or time.time() - pending["at"] >= policy["proactive_feedback_sec"]:
+                    state["ignored"] = state.get("ignored", 0) + 1
+                    state["feedback"] = None
+                    state["reaction"] = "未观察到明确接话（不等于不喜欢）"
+            self._save_group(msg["chat_id"])
+
+    def record_direct_reply(self, chat_id):
+        with self._lock:
+            self._group_state(chat_id)["last_speech"] = time.time()
+            self._save_group(chat_id)
+
+    def participation_context(self, chat_id):
+        with self._lock:
+            state = self._group_state(chat_id)
+            return state.get("reaction", "暂无反馈"), self._episodes.get(chat_id, {}).get("reason", "")
+
+    def _participation_gate(self, msg, policy, episode):
+        now = time.time()
+        hour = datetime.fromtimestamp(now).hour
+        start, end = policy["proactive_quiet_start"], policy["proactive_quiet_end"]
+        quiet = start <= hour < end if start < end else (hour >= start or hour < end) if start != end else False
+        if quiet:
+            return False, "quiet hours"
+        state = self._group_state(msg["chat_id"])
+        today = datetime.fromtimestamp(now).date().isoformat()
+        if state.get("day") != today:
+            state.update(day=today, count=0)
+        if state.get("count", 0) >= policy["proactive_daily_limit"]:
+            return False, "daily budget reached"
+        factor = 2 if state.get("ignored", 0) >= policy["proactive_ignored_limit"] else 1
+        if now - state.get("last_speech", 0) < policy["proactive_cooldown_sec"] * factor:
+            return False, "group cooldown"
+        rows = episode["rows"]
+        effective = [r for r in rows[-policy["proactive_context_count"]:] if len(str(r.get("content", "")).strip()) > 3]
+        if len(effective) < policy["proactive_min_messages"]:
+            return False, "too few meaningful messages"
+        text = str(msg.get("content", ""))
+        # Cheap candidate signals; the AI still decides whether there is anything to add.
+        if any(word.strip() in text for word in policy["proactive_trigger_words"].split("、") if word.strip()):
+            reason = "当前有观点、分享或开放问题"
+        elif len(rows) > 1 and rows[-1]["timestamp"] - rows[-2]["timestamp"] >= policy["proactive_resume_gap_sec"]:
+            reason = "停顿后有人重新展开话题"
+        else:
+            return False, "no concrete reason to interject"
+        self._episodes[msg["chat_id"]]["reason"] = reason
+        return True, reason
 
     def episode_context(self, chat_id: str, limit: int) -> tuple[list[dict], str]:
         with self._lock:
@@ -224,8 +262,17 @@ class ProactiveGate:
         )
 
     def record_speech(self, chat_id: str) -> None:
-        """Reset consecutive silence counter when the AI successfully speaks."""
+        """Reserve budget for a generated reply; this is not proof of delivery."""
         with self._lock:
+            group = self._group_state(chat_id)
+            now = time.time()
+            day = datetime.fromtimestamp(now).date().isoformat()
+            if group.get("day") != day:
+                group.update(day=day, count=0)
+            group["count"] = group.get("count", 0) + 1
+            group["last_speech"] = now
+            group["feedback"] = {"at": now, "seen": 0}
+            self._save_group(chat_id)
             state = self._episodes.get(chat_id)
             if state:
                 state["pending"] = False
