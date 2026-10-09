@@ -4,6 +4,13 @@
 
 ## 2026-10-09
 
+### WCDB 初始化诊断与依赖加载
+
+- 保留DLL搜索目录句柄，避免临时句柄释放后原生引擎后续加载依赖时搜索路径失效。
+- 原生初始化失败同时显示wcdb_init与前置InitProtection返回值，明确此时尚未打开微信数据库，不把未知原生错误归因于API或数据库密钥。
+- 本机核对各测试版本WCDB二进制相同及实际加载路径；未修改保护逻辑，未访问聊天正文。原生错误码缺少公开定义，根因仍待诊断，不声称此版本已修复-1000。
+
+
 ### 五类提示词模板与占位符调用
 
 - 接入name/base/persona/soul/today/history/recent/max_chars/my_recent/allowed_moves/sender/question的一次性替换，JSON及聊天资料中的花括号不递归解释；无资料明确标注。

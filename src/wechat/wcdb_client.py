@@ -289,6 +289,8 @@ class WcdbNativeClient:
         # Resolve config (wxid + dbPath)
         self._config_path = config_path  # may be None — auto-detected
         self._dll = None
+        self._dll_search_cookie = None
+        self._protection_status = None
         self._handle = 0
         self._config = None
         self._nicknames = {}  # wxid -> display name cache
@@ -317,7 +319,10 @@ class WcdbNativeClient:
 
     def init(self):
         """Load wcdb_api.dll, patch DRM, and initialize the WCDB engine."""
-        os.add_dll_directory(self._dll_dir)
+        # Retain the search-path handle: destroying it removes the directory
+        # before dependencies loaded lazily by the native engine can resolve.
+        if self._dll_search_cookie is None:
+            self._dll_search_cookie = os.add_dll_directory(self._dll_dir)
         dll_path = os.path.join(self._dll_dir, "wcdb_api.dll")
         self._dll = ct.CDLL(dll_path)
 
@@ -371,12 +376,17 @@ class WcdbNativeClient:
 
         # Init protection
         resource_path = os.path.dirname(self._dll_dir)
-        self._dll.InitProtection(resource_path.encode("utf-8"))
+        self._protection_status = self._dll.InitProtection(resource_path.encode("utf-8"))
+        logger.info("WCDB prerequisite initialization returned %s", self._protection_status)
 
         # Init engine
         ret = self._dll.wcdb_init()
         if ret != 0:
-            raise RuntimeError(f"wcdb_init failed: {ret}")
+            raise RuntimeError(
+                f"WCDB引擎初始化失败：wcdb_init={ret}，"
+                f"InitProtection={self._protection_status}。尚未打开微信数据库。"
+                "请保留此完整错误码；该原生库没有随项目提供错误码定义，不能据此认定为数据库密钥错误。"
+            )
 
         logger.info("WCDB engine initialized (DRM patched)")
 
