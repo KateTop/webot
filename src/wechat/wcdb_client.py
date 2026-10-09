@@ -52,6 +52,26 @@ else:
     EXPECTED_PATCH_BYTE = _DEFAULT_PATCH_BYTE
     logger.debug("Using default WCDB_PATCH_BYTE: 0x%x", EXPECTED_PATCH_BYTE)
 
+# This specific upstream binary returns -101 from InitProtection after its
+# _time64 cutoff. Do not assume a replacement DLL uses the same error map.
+_VERIFIED_EXPIRING_DLL_SHA256 = "6915913a3a9930694e5c821bf58841e17bbad0f56691e307674fb0e31e9d44b8"
+
+
+def _component_expiry_error(status, dll_path):
+    if status != -101:
+        return None
+    try:
+        checksum = hashlib.sha256(Path(dll_path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+    if checksum != _VERIFIED_EXPIRING_DLL_SHA256:
+        return None
+    return ("微信读取组件wcdb_api.dll已过期（InitProtection=-101）："
+            "此版本有效截止时间为北京时间2026-10-01 07:59:59。"
+            "需更新兼容的原生读取组件；重新填写.env或重新编译现有组件无法解决。"
+            "尚未打开微信数据库。")
+
+
 # ── DLL loading ──────────────────────────────────────────────────────
 
 _kernel32 = ct.WinDLL("kernel32", use_last_error=True)
@@ -378,6 +398,9 @@ class WcdbNativeClient:
         resource_path = os.path.dirname(self._dll_dir)
         self._protection_status = self._dll.InitProtection(resource_path.encode("utf-8"))
         logger.info("WCDB prerequisite initialization returned %s", self._protection_status)
+        expiry_error = _component_expiry_error(self._protection_status, dll_path)
+        if expiry_error:
+            raise RuntimeError(expiry_error)
 
         # Init engine
         ret = self._dll.wcdb_init()
