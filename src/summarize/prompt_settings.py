@@ -50,7 +50,43 @@ def save_prompt_settings(data: dict) -> dict[str, str]:
     return result
 
 
-def with_user_instructions(default_prompt: str, field: str) -> str:
-    """Append configured instructions without formatting user supplied braces."""
+PLACEHOLDERS = ("name", "base", "soul", "today", "history", "recent", "max_chars", "persona", "my_recent", "allowed_moves", "sender", "question")
+
+
+def render_template(template: str, values: dict) -> str:
+    """One-pass replacement of reserved tokens only; JSON and inserted text stay literal."""
+    import re
+    pattern = r"(?<!\{)\{(" + "|".join(PLACEHOLDERS) + r")\}(?!\})"
+    return re.sub(pattern, lambda match: str(values.get(match[1], "（本场景未提供）")), template)
+
+
+def format_history(rows):
+    import datetime
+    lines = []
+    for row in rows or []:
+        stamp = row.get("timestamp", 0)
+        when = datetime.datetime.fromtimestamp(stamp).isoformat(timespec="minutes") if stamp else "时间未知"
+        lines.append(f"[{when}] {row.get('sender_name', '?')} ({row.get('sender_id', '?')}) message_id={row.get('message_id', row.get('id', '?'))}: {row.get('content', '')}")
+    return "\n".join(lines) or "（无可用聊天记录）"
+
+
+def template_values(values=None):
+    import datetime
+    from src.conversation_policy import load_policy
+    settings = load_prompt_settings()
+    policy = load_policy()
+    result = {key: "（本场景未提供）" for key in PLACEHOLDERS}
+    result.update(name="群聊小助手", base="（基础人设中不展开自身）", today=datetime.date.today().isoformat(),
+        persona=settings.get("persona", "") or "好奇，重视具体细节，不喜欢空话；不懂就说不懂",
+        max_chars=policy["memory_body_max_chars"], allowed_moves=policy["proactive_allowed_moves"])
+    result.update(values or {})
+    return result
+
+
+def with_user_instructions(default_prompt: str, field: str, values=None) -> str:
+    """Expand user templates, preserving all non-reserved braces."""
     custom = load_prompt_settings().get(field, "").strip()
-    return default_prompt + ("\n\n## 用户自定义指令\n" + custom if custom else "")
+    context = template_values(values)
+    from src.memory.instructions import base_prompt
+    context["base"] = base_prompt(context["name"], context)
+    return default_prompt + ("\n\n## 用户自定义指令\n" + render_template(custom, context) if custom else "")

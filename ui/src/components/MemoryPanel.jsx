@@ -233,6 +233,7 @@ export default function MemoryPanel() {
     {section === 'prompt' && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-4">
       <h3 className="font-semibold">记忆创建与沉淀指令</h3>
       <p className={muted}>这里的内容追加到内置记忆整理规则后。自动整理、启动补录和手动整理使用同一份指令；留空时使用内置规则。</p>
+      <p className={muted}>支持 {'{name}'}、{'{base}'}、{'{persona}'}、{'{soul}'}、{'{today}'}、{'{history}'}、{'{max_chars}'}。写入返回 NO_UPDATE 或 changes JSON，沉淀返回 NO_UPDATE 或 operations JSON；空白响应不视为成功。</p>
       <textarea aria-label="记忆整理指令" value={prompt} onChange={e => setPrompt(e.target.value)} rows={12}
         className="w-full bg-bg-raised border border-border-main rounded-xl p-4 text-sm text-text-main focus:outline-none focus:border-brand-green" placeholder="例如：重要事件保留时间与依据；不要把玩笑写成稳定的人物判断。" />
       <p className={muted}>强制协议：无更新只返回 NO_UPDATE；空白是失败，不推进游标。写入引用消息ID，日期由程序计算。每批最多100条。</p>

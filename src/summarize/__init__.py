@@ -58,6 +58,7 @@ def create_summarizer(config) -> AbstractSummarizer:
             logger.warning("Skipping unconfigured AI fallback: %s", name)
             continue
         provider = _create_single(config, name, len(order) > 1)
+        provider.bot_name = getattr(config, "bot_display_name", "群聊小助手")
         provider.max_retries = getattr(config, "ai_retry_count", 3) + 1
         providers.append((name, provider))
     return providers[0][1] if len(providers) == 1 else FailoverSummarizer(providers)

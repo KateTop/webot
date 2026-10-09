@@ -158,6 +158,7 @@ class AbstractSummarizer(ABC):
         def _esc(s: str) -> str:
             return s.replace("{", "{{").replace("}", "}}")
 
+        raw_name, raw_sender, raw_question = bot_name, requester_name, message
         bot_name = _esc(bot_name)
         group_name = _esc(group_name)
         requester_name = _esc(requester_name or "群友")
@@ -191,7 +192,9 @@ class AbstractSummarizer(ABC):
         context_section = _esc(context_section)
         memory_display = _esc(memory_display)
 
-        from .prompt_settings import with_user_instructions
+        from .prompt_settings import with_user_instructions, format_history
+        template_context = dict(name=raw_name, soul=group_memory or "（本次未读取长期记忆，需要时请求查询）",
+            recent=format_history(context_messages), sender=raw_sender or "群友", question=raw_question)
         system_prompt = self.CHAT_SYSTEM_PROMPT.format(
             bot_name=bot_name,
             group_name=group_name,
@@ -202,8 +205,9 @@ class AbstractSummarizer(ABC):
             group_memory=memory_display,
         )
         from src.memory.instructions import base_prompt
-        system_prompt = base_prompt(bot_name) + "\n" + system_prompt
-        system_prompt = with_user_instructions(system_prompt, "chat")
+        system_prompt = base_prompt(template_context["name"], template_context) + "\n" + system_prompt
+        system_prompt = with_user_instructions(system_prompt, "chat", template_context)
+        system_prompt += "\n执行约束：未实际成功保存/遗忘或确认提醒，不能声称已完成。若需长期记忆，按内置规则返回 [[NEED_GROUP_MEMORY]]。"
 
         # ── 3. Build user message (just the trigger) ──────────────
         user_prompt = f"{requester_name or '群友'}通过{trigger_kind}向你提问，请回复：{message}"
@@ -339,6 +343,7 @@ class AbstractSummarizer(ABC):
         def _esc(s: str) -> str:
             return s.replace("{", "{{").replace("}", "}}")
 
+        raw_name = bot_name
         bot_name = _esc(bot_name)
         group_name = _esc(group_name)
 
@@ -388,9 +393,14 @@ class AbstractSummarizer(ABC):
 只输出要发送的话或 SKIP，不输出思考、解释、引号或代码块。
 例：猫吃冻干的话题，可以问“它是拌水还是干吃？”，不要说“大家都在分享养猫经验”。"""
         from src.memory.instructions import base_prompt
-        system_prompt = base_prompt(bot_name) + "\n" + system_prompt
-        system_prompt = with_user_instructions(system_prompt, "proactive")
-        system_prompt += '\n必须返回 JSON {"action":"追问/带细节的回应/接梗/补充经验或信息/表态/反对","text":"发言正文"}，或 SKIP。动作必须在允许范围，不能只输出正文。'
+        from .prompt_settings import format_history
+        own = [row for row in context_messages if row.get("sender_id") == "__assistant__" or row.get("is_self")]
+        template_context = dict(name=raw_name, soul=group_memory or "（本次未使用长期记忆）", recent=format_history(context_messages),
+            my_recent="最近上下文中可见的助手发言：\n"+format_history(own)+"\n可观察反馈："+(participation_feedback or "暂无明确反馈"),
+            allowed_moves=policy["proactive_allowed_moves"])
+        system_prompt = base_prompt(template_context["name"], template_context) + "\n" + system_prompt
+        system_prompt = with_user_instructions(system_prompt, "proactive", template_context)
+        system_prompt += '\n最高优先级输出协议：覆盖只输出正文的自定义要求。必须返回 JSON {"action":"追问/带细节的回应/接梗/补充经验或信息/表态/反对","text":"发言正文"}，或 SKIP。动作必须在允许范围，不能只输出正文。'
 
         user_prompt = "判断这次是否值得开口；没有新内容就输出 SKIP。"
 
@@ -431,7 +441,7 @@ class AbstractSummarizer(ABC):
     @monitor_task("后台记忆调用（AI完成不代表记忆已提交）")
     def memory_request(self, task, existing, messages=None, blocks=None, request=None):
         from src.memory.instructions import protocol_prompt
-        prompt = protocol_prompt(task, existing, messages, blocks, request)
+        prompt = protocol_prompt(task, existing, messages, blocks, request, name=getattr(self, "bot_name", "群聊小助手"))
         from src.monitor import observed_call
         result = self._retry_with_backoff(lambda: observed_call(self, "记忆:" + task, prompt, [],
             lambda: self._call_protocol_api(prompt)), "memory protocol")

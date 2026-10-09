@@ -84,7 +84,7 @@ class ClaudeSummarizer(AbstractSummarizer):
             response = self._monitored_create(self.client.messages.parse,
                 model=self.model,
                 max_tokens=8192,
-                system=with_user_instructions(SYSTEM_PROMPT, "summary"),
+                system=with_user_instructions(SYSTEM_PROMPT, "summary", {"name":getattr(self, "bot_name", "群聊小助手"), "history":user_prompt}),
                 messages=[{"role": "user", "content": user_prompt}],
                 output_format=SummaryResult,
             )
@@ -105,7 +105,7 @@ class ClaudeSummarizer(AbstractSummarizer):
             response = self._monitored_create(self.client.messages.create,
                 model=self.model,
                 max_tokens=1024,
-                system=with_user_instructions(CHUNK_SYSTEM_PROMPT, "summary"),
+                system=with_user_instructions(CHUNK_SYSTEM_PROMPT, "summary", {"name":getattr(self, "bot_name", "群聊小助手"), "history":user_prompt}),
                 messages=[{"role": "user", "content": user_prompt}],
             )
             return response.content[0].text
@@ -121,7 +121,7 @@ class ClaudeSummarizer(AbstractSummarizer):
             response = self._monitored_create(self.client.messages.parse,
                 model=self.model,
                 max_tokens=8192,
-                system=with_user_instructions(MERGE_SYSTEM_PROMPT, "summary"),
+                system=with_user_instructions(MERGE_SYSTEM_PROMPT, "summary", {"name":getattr(self, "bot_name", "群聊小助手"), "history":user_prompt}),
                 messages=[{"role": "user", "content": user_prompt}],
                 output_format=SummaryResult,
             )

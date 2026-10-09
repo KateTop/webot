@@ -128,7 +128,8 @@ function AiSection({ form, update }) {
       )}
       <div className="mt-7 border-t border-border-main pt-5">
         <h4 className="text-sm font-semibold mb-2">自定义 Prompt</h4>
-        <p className="text-xs mb-4">问答指令适用于艾特和引用；主动发言使用独立指令；总结指令适用于短篇与长篇群聊总结。追加到内置指令，修改后下次 AI 调用生效。</p>
+        <p className="text-xs mb-4">问答指令适用于艾特和引用；主动发言使用独立指令；总结指令适用于短篇与长篇群聊总结。支持占位符替换，修改后下次 AI 调用生效。基础人设自定义后替换默认人设；其他场景指令追加到内置规则，输出协议由程序保留。</p>
+        <p className="text-xs mb-4">占位符：{'{name}'} 助手名、{'{base}'} 展开的基础人设、{'{persona}'} 性格、{'{soul}'} 本次使用的记忆、{'{today}'} 日期、{'{history}'} 整理/总结批次、{'{recent}'} 最近对话、{'{max_chars}'} 记忆字数上限。主动发言另支持 {'{my_recent}'} 可见助手发言与反馈、{'{allowed_moves}'} 开放动作；问答支持 {'{sender}'} 提问人、{'{question}'} 问题。未提供的资料会明确标注，记忆按需读取。</p>
         {['base', 'persona', 'proactive', 'chat', 'summary'].map(key => (
           <Field key={key} label={{ base: '共用基础人设', persona: '助手性格与品味', proactive: '主动发言指令', chat: '群聊问答指令', summary: '群聊总结指令' }[key]}>
             <textarea className="w-full min-h-28 rounded-xl border border-border-main bg-bg-card p-3 text-sm text-text-main"

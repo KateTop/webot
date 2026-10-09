@@ -242,7 +242,7 @@ class OpenAISummarizer(AbstractSummarizer):
                 model=self.model,
                 max_tokens=8192,
                 messages=[
-                    {"role": "system", "content": with_user_instructions(SYSTEM_PROMPT, "summary")},
+                    {"role": "system", "content": with_user_instructions(SYSTEM_PROMPT, "summary", {"name":getattr(self, "bot_name", "群聊小助手"), "history":user_prompt})},
                     {"role": "user", "content": user_prompt},
                 ],
                 tools=[STORE_SUMMARY_TOOL],
@@ -267,7 +267,7 @@ class OpenAISummarizer(AbstractSummarizer):
                 model=self.model,
                 max_tokens=1024,
                 messages=[
-                    {"role": "system", "content": with_user_instructions(CHUNK_SYSTEM_PROMPT, "summary")},
+                    {"role": "system", "content": with_user_instructions(CHUNK_SYSTEM_PROMPT, "summary", {"name":getattr(self, "bot_name", "群聊小助手"), "history":user_prompt})},
                     {"role": "user", "content": user_prompt},
                 ],
             )
@@ -301,7 +301,7 @@ class OpenAISummarizer(AbstractSummarizer):
                 model=self.model,
                 max_tokens=8192,
                 messages=[
-                    {"role": "system", "content": with_user_instructions(MERGE_SYSTEM_PROMPT, "summary")},
+                    {"role": "system", "content": with_user_instructions(MERGE_SYSTEM_PROMPT, "summary", {"name":getattr(self, "bot_name", "群聊小助手"), "history":user_prompt})},
                     {"role": "user", "content": user_prompt},
                 ],
                 tools=[STORE_SUMMARY_TOOL],
