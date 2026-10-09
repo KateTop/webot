@@ -140,7 +140,7 @@ def main():
             pass
         return
 
-    title = "webot — 2026-10-09 Bot监视版 — " + ("初始设置" if onboarding_needed else "Dashboard")
+    title = "webot — 2026-10-09 主动发言整合版 — " + ("初始设置" if onboarding_needed else "Dashboard")
 
     # Try native WebView2, fall back to browser
     try:

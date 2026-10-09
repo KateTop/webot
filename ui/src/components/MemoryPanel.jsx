@@ -1,3 +1,4 @@
+import { PROACTIVE_KEYS } from './ProactivePolicy'
 import { useEffect, useState } from 'react'
 import NicknameEditor from './NicknameEditor'
 
@@ -119,7 +120,7 @@ export default function MemoryPanel() {
         await refreshGroup()
         setMessage('已创建该群的 soul.md，可直接编辑并保存')
       } else if (action === 'policy') {
-        const data = await request('/conversation-policy', policy)
+        const data = await request('/conversation-policy', Object.fromEntries(Object.entries(policy).filter(([key]) => !PROACTIVE_KEYS.includes(key))))
         setPolicy(data.policy)
         setMessage('对话与记忆策略已保存；下一段对话起生效')
       }
@@ -242,7 +243,7 @@ export default function MemoryPanel() {
 
     {section === 'policy' && policy && <div className="bg-bg-card border border-border-main rounded-2xl p-6 space-y-5">
       <div><h3 className="font-semibold">对话与记忆策略</h3>
-        <p className={muted}>本地规则判断话题范围、热度和沉淀时机；只有进入整理或候选发言时才调用 AI。参数保存到 data/conversation_policy.json。</p></div>
+        <p className={muted}>设置话题分段、记忆整理及通用回复限制。主动发言的专用参数在“功能开关 → 主动发言”管理。</p></div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {[
           ['episode_gap_sec', '话题间隔（秒）', 60, 3600],
@@ -257,41 +258,12 @@ export default function MemoryPanel() {
           ['mention_per_minute', '每人每分钟艾特/引用上限', 1, 60],
           ['send_delay_min_sec', '发送延迟下限（秒）', 0, 10],
           ['send_delay_max_sec', '发送延迟上限（秒）', 0, 10],
-          ['proactive_min_messages', '主动发言最少消息', 2, 100],
-          ['proactive_min_participants', '主动发言最少人数', 1, 20],
-          ['proactive_min_age_sec', '话题最短持续（秒）', 0, 600],
-          ['proactive_min_new_messages', '两次发言间新增消息', 1, 100],
-          ['proactive_cooldown_sec', '主动发言冷却（秒）', 30, 7200],
-          ['proactive_resume_gap_sec', '停顿后重新展开话题的间隔（秒）', 30, 3600],
-          ['proactive_daily_limit', '每群每日主动发言上限（0 禁用）', 0, 100],
-          ['proactive_eval_sec', '候选判断间隔（秒）', 30, 7200],
-          ['proactive_context_count', '主动发言上下文条数', 10, 100],
-          ['proactive_max_chars', '主动发言最大字数（超长不发）', 20, 160],
-          ['proactive_quiet_start', '安静时段开始（小时）', 0, 23],
-          ['proactive_quiet_end', '安静时段结束（相同则关闭）', 0, 23],
-          ['proactive_feedback_sec', '观察接话时间（秒）', 60, 3600],
-          ['proactive_feedback_messages', '观察接话消息数', 1, 30],
-          ['proactive_ignored_limit', '连续无人接话多少次后冷却翻倍', 1, 10],
-          ['proactive_max_replies', '单段最多主动发言', 0, 10],
         ].map(([key, label, min, max]) => <label key={key} className="text-sm space-y-1">
           <span>{label}</span><input type="number" min={min} max={max} step={key === 'topic_similarity' ? 0.01 : 1}
             value={policy[key]} onChange={e => setPolicy(prev => ({ ...prev, [key]: Number(e.target.value) }))}
             className="w-full bg-bg-raised border border-border-main rounded-lg px-3 py-2" /></label>)}
       </div>
-      <label className="text-sm block space-y-1"><span>允许主动发言的阶段</span>
-        <select value={policy.proactive_phases} onChange={e => setPolicy(prev => ({ ...prev, proactive_phases: e.target.value }))}
-          className="w-full bg-bg-raised border border-border-main rounded-lg px-3 py-2">
-          <option value="rising_peak">升温和持续讨论（推荐）</option><option value="all_active">包括降温阶段</option>
-        </select></label>
-      <label className="text-sm block space-y-1"><span>允许的插话方式</span>
-        <input value={policy.proactive_allowed_moves} maxLength={200}
-          onChange={e => setPolicy(prev => ({ ...prev, proactive_allowed_moves: e.target.value }))}
-          className="w-full bg-bg-raised border border-border-main rounded-lg px-3 py-2" /></label>
-      <label className="text-sm block space-y-1"><span>候选话题关键词（用顿号分隔，仅预筛，AI仍可保持沉默）</span>
-        <input value={policy.proactive_trigger_words} maxLength={200}
-          onChange={e => setPolicy(prev => ({ ...prev, proactive_trigger_words: e.target.value }))}
-          className="w-full bg-bg-raised border border-border-main rounded-lg px-3 py-2" /></label>
-      <p className={muted}>推荐先用“追问、带细节的回应”。每日额度及冷却按群保存，切段和重启不会重置；确认在微信库中发出后占额度；未确认不会自动重复发送。未观察到明确接话不代表反感。参数保存立即生效，人设与主动发言指令在 AI 配置中编辑。</p>
+      <p className={muted}>主动发言参数已统一移至“功能开关 → 主动发言”。此处话题分段规则同时供记忆整理和主动发言使用。</p>
       <button className={button} disabled={working} onClick={() => act('policy')}>保存对话策略</button>
     </div>}
 
