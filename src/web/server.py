@@ -990,7 +990,7 @@ class _UIHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         # Only delegate specific API paths; return 405 for unknown POST paths
         if self.path in ("/api/config", "/api/config/import", "/api/prompts", "/api/start", "/api/stop",
-                         "/api/monitor/clear", "/api/memory/save", "/api/memory/create", "/api/memory/consolidate",
+                         "/api/mcp-config", "/api/monitor/clear", "/api/memory/save", "/api/memory/create", "/api/memory/consolidate",
                          "/api/memory/migrate", "/api/memory/restore", "/api/memory/blocks", "/api/memory/settle", "/api/memory/reminder-cancel",
                          "/api/conversation-policy",
                          "/api/nicknames",
@@ -1033,6 +1033,26 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True, "policy": policy})
             except (ValueError, OSError, json.JSONDecodeError) as exc:
                 self.send_json({"ok": False, "error": str(exc)})
+            return
+        if parsed_path.path == "/api/mcp-config":
+            origin = self.headers.get("Origin", "")
+            if (self.client_address[0] not in ("127.0.0.1", "::1") or
+                    (origin and _urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"))):
+                self.send_json({"ok":False,"error":"Local request required"})
+                return
+            from src.wechat.mcp_client import load_connection, save_connection
+            try:
+                if self.command == "POST":
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 10000:
+                        raise ValueError("MCP配置大小无效")
+                    config = save_connection(json.loads(self.rfile.read(length)))
+                else:
+                    config = load_connection()
+                    config["token"] = "********" if config["token"] else ""
+                self.send_json({"ok":True,"config":config})
+            except (ValueError, OSError):
+                self.send_json({"ok":False,"error":"MCP配置无效或无法保存，请检查本机地址与字段"})
             return
         if parsed_path.path in ("/api/monitor", "/api/monitor/clear"):
             origin = self.headers.get("Origin", "")

@@ -68,7 +68,7 @@ a = Analysis(
         'src.memory.workspace', 'src.memory.instructions',
         'src.conversation_policy', 'src.conversation_episodes',
         'src.wechat', 'src.wechat.base', 'src.wechat.wcdb_backend',
-        'src.wechat.wcdb_client', 'src.wechat.mac_hybrid_backend',
+        'src.wechat.wcdb_client', 'src.wechat.mcp_client', 'src.wechat.mac_hybrid_backend',
         'src.wechat.mac_ui_backend', 'src.wechat.window_controller',
         'src.wechat.keyboard', 'src.wechat.helpers', 'src.wechat.extract_key',
         'src.wechat.pywechat_controller',

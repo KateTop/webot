@@ -1,3 +1,4 @@
+import McpConnectionPanel from './McpConnectionPanel'
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle, Warning, FloppyDisk, Info, DownloadSimple, UploadSimple } from '@phosphor-icons/react'
@@ -499,14 +500,17 @@ function IdentitySection({ form, update }) {
         )}
       </Field>
 
-      <Field label="微信后端" hint="Windows 推荐 WCDB；macOS 推荐 WeFlow 直读并用辅助功能发送">
+      <Field label="微信后端" hint="Windows 可使用 WeChatDataAnalysis MCP读取；发送仍使用界面自动化">
         <Select value={form.wechat_backend} onChange={v => update('wechat_backend', v)} options={[
-          { value: 'wcdb', desc: 'WCDB', hint: '推荐 · 原生数据库直读' },
+          { value: 'mcp', desc: 'WeChatDataAnalysis MCP', hint: '本机MCP实时读取 + 原有界面发送' },
+          { value: 'mcp_pywechat', desc: 'MCP + pywechat', hint: '本机MCP实时读取 + pywechat界面发送' },
+          { value: 'wcdb', desc: 'WCDB', hint: '旧组件 · 当前捆绑DLL已过期' },
           { value: 'wcdb_pywechat', desc: 'WCDB + pywechat', hint: '实验性 · WCDB 接收 + pywechat 界面发送' },
           { value: 'mac_hybrid', desc: 'macOS WeFlow', hint: '推荐 · WeFlow 直读 + 辅助功能发送' },
           { value: 'mac_ui', desc: 'macOS UI', hint: '实验性 · 辅助功能自动化' },
         ]} />
       </Field>
+      {['mcp','mcp_pywechat'].includes(form.wechat_backend) && <McpConnectionPanel />}
     </div>
   )
 }

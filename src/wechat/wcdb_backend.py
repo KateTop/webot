@@ -61,7 +61,7 @@ class WcdbBackend(AbstractWeChatBackend):
         self._running = False
         self._stop_requested = False
         self._client: Optional[WcdbNativeClient] = None
-        if config is not None and getattr(config, "wechat_backend", "wcdb") == "wcdb_pywechat":
+        if config is not None and getattr(config, "wechat_backend", "wcdb") in ("wcdb_pywechat", "mcp_pywechat"):
             from .pywechat_controller import PyWeChatSendController
             self._window = PyWeChatSendController()
         else:
@@ -83,6 +83,12 @@ class WcdbBackend(AbstractWeChatBackend):
         self._on_history_ready = on_history_ready
         self._history_pool: concurrent.futures.ThreadPoolExecutor | None = None
 
+    def _make_client(self):
+        if getattr(getattr(self, "_voice_config", None), "wechat_backend", "") in ("mcp", "mcp_pywechat"):
+            from .mcp_client import McpWeChatClient
+            return McpWeChatClient()
+        return WcdbNativeClient()
+
     # ── Public API ─────────────────────────────────────────────────
 
     def start(self, callback: MessageCallback) -> None:
@@ -98,7 +104,7 @@ class WcdbBackend(AbstractWeChatBackend):
 
         # Init and open database
         try:
-            self._client = WcdbNativeClient()
+            self._client = self._make_client()
             self._client.init()
             self._client.open()
             logger.info("WCDB database opened successfully")
@@ -296,7 +302,7 @@ class WcdbBackend(AbstractWeChatBackend):
             except Exception:
                 pass
         try:
-            self._client = WcdbNativeClient()
+            self._client = self._make_client()
             self._client.init()
             self._client.open()
             logger.info("WCDB reinitialized successfully")
@@ -635,10 +641,15 @@ class WcdbBackend(AbstractWeChatBackend):
         local_type = int(msg.get("localType", msg.get("msg_type", 1)))
         from .quote import inspect_quote
         own_wxid = (getattr(self._client, "_config", None) or {}).get("myWxid", "")
-        quote = inspect_quote(content, own_wxid) if local_type == 49 else None
+        quote = inspect_quote(content, own_wxid) if local_type == 49 and not msg.get("mcp_structured") else None
         quotes_bot = quote.quotes_this_account if quote else False
         quoted_content = quote.quoted_text if quote else ""
-        if local_type == 49:
+        if msg.get("mcp_structured"):
+            quotes_bot = bool(own_wxid and msg.get("mcp_quote_username") == own_wxid)
+            quoted_content = str(msg.get("mcp_quote_content") or "")
+            if not content and quotes_bot:
+                content = "[引用了你的消息]"
+        if local_type == 49 and not msg.get("mcp_structured"):
             logger.debug(
                 "App message inspected: quote_valid=%s own_id_available=%s "
                 "quotes_bot=%s mentions_bot_id=%s has_new_text=%s",
@@ -656,7 +667,7 @@ class WcdbBackend(AbstractWeChatBackend):
         # Voice messages (localType=34) have empty message_content;
         # we must recognise them BEFORE the empty-content check below.
         if local_type == 34:
-            voice_text = None if historical else self._try_voice(msg)
+            voice_text = (msg.get("voiceTranscript") if msg.get("mcp_structured") else None if historical else self._try_voice(msg))
             if voice_text:
                 content = f"[语音] {voice_text}"
             else:
@@ -732,7 +743,8 @@ class WcdbBackend(AbstractWeChatBackend):
             f"@{self._bot_name}" in resolved_content
             or f"@{self._bot_name}" in content
         )
-        is_at = bool(is_at or (quote and quote.mentions_this_account))
+        is_at = bool(is_at or (quote and quote.mentions_this_account) or
+                     (msg.get("mcp_structured") and own_wxid and own_wxid in msg.get("mcp_at_users", [])))
         if local_type == 49 and (quotes_bot or is_at):
             logger.info(
                 "Quote trigger classified: quotes_bot=%s at_bot=%s own_id_available=%s",
